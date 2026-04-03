@@ -1887,54 +1887,34 @@ def get_monitor_adapter():
 
 def scan_with_monitor(adapter, duration=5):
     """
-    Scan for networks using a monitor-mode adapter by capturing beacons.
-    Hops through 2.4, 5, and 6 GHz channels while capturing.
-    Uses tshark live capture -> text output file. No pcap file needed.
-    Returns list of networks in the same format as parse_iw_scan.
+    Scan using monitor adapter. Uses screen+dumpcap (same as capture page)
+    then reads the pcap with tshark.
     """
     scan_freqs = [
         2412, 2437, 2462,
         5180, 5260, 5500, 5580, 5660, 5745, 5825,
         5955, 6035, 6115, 6275, 6435,
     ]
-
     dwell_ms = max(300, int((duration * 1000) / len(scan_freqs)))
-
-    fields = [
-        'wlan.bssid', 'wlan.ssid', 'radiotap.channel.freq',
-        'radiotap.dbm_antsignal',
-        'wlan.rsn.akms.type', 'wlan.rsn.pcs.type',
-        'wlan.wfa.ie.wpa.akms.type', 'wlan.wfa.ie.wpa.pcs.type',
-        'wlan.fixed.capabilities.privacy',
-        'wlan.ht.capabilities', 'wlan.vht.capabilities',
-        'wlan.tag.number', 'wlan.rsn.capabilities',
-    ]
-
-    # Build tshark command for live capture directly to text output
-    # No pcap file - tshark captures, filters beacons, outputs fields to a text file
-    output_path = f'/tmp/wifi_scan_{uuid.uuid4().hex[:8]}.txt'
-
-    tshark_cmd = [
-        'tshark', '-i', adapter,
-        '-a', f'duration:{duration}',
-        '-Y', 'wlan.fc.type_subtype == 0x0008',
-        '-T', 'fields', '-E', 'separator=\t', '-E', 'occurrence=a',
-    ]
-    for f in fields:
-        tshark_cmd.extend(['-e', f])
+    pcap_path = f'/tmp/wifi_scan_{uuid.uuid4().hex[:8]}.pcap'
+    session_name = 'wifi_scan_mon'
 
     try:
-        # Write tshark output to a file (avoids pipe buffer issues)
-        out_file = open(output_path, 'w')
-        capture_proc = subprocess.Popen(
-            tshark_cmd,
-            stdout=out_file, stderr=subprocess.DEVNULL,
-        )
+        # Kill any leftover scan session
+        subprocess.run(['sudo', 'screen', '-S', session_name, '-X', 'quit'],
+                       capture_output=True, timeout=3)
+        time.sleep(0.2)
 
-        # Channel hop while tshark captures
-        time.sleep(0.5)
+        # Start capture in screen - EXACT same method as the working capture page
+        cmd = ['sudo', 'screen', '-dmS', session_name,
+               'sudo', '-u', RUNNING_USER, 'dumpcap',
+               '-i', adapter, '-w', pcap_path, '-q']
+        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=5)
+        time.sleep(1)
+
+        # Channel hop while capturing
         for freq in scan_freqs:
-            if capture_proc.poll() is not None:
+            if not is_process_running(session_name):
                 break
             freq_info = FREQ_TO_CHANNEL.get(freq)
             if not freq_info:
@@ -1947,28 +1927,21 @@ def scan_with_monitor(adapter, duration=5):
                 pass
             time.sleep(dwell_ms / 1000.0)
 
-        # Wait for tshark to finish
-        try:
-            capture_proc.wait(timeout=duration + 5)
-        except subprocess.TimeoutExpired:
-            capture_proc.kill()
-        out_file.close()
-        time.sleep(0.2)
+        # Stop the capture
+        subprocess.run(['sudo', 'screen', '-S', session_name, '-X', 'quit'],
+                       capture_output=True, timeout=3)
+        time.sleep(0.5)
 
-        # Read the text output
-        rows = []
-        try:
-            with open(output_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    parts = line.split('\t')
-                    while len(parts) < len(fields):
-                        parts.append('')
-                    rows.append(dict(zip(fields, parts)))
-        except Exception:
-            rows = []
+        # Parse beacons from the pcap
+        rows = run_tshark(pcap_path, 'wlan.fc.type_subtype == 0x0008', [
+            'wlan.bssid', 'wlan.ssid', 'radiotap.channel.freq',
+            'radiotap.dbm_antsignal',
+            'wlan.rsn.akms.type', 'wlan.rsn.pcs.type',
+            'wlan.wfa.ie.wpa.akms.type', 'wlan.wfa.ie.wpa.pcs.type',
+            'wlan.fixed.capabilities.privacy',
+            'wlan.ht.capabilities', 'wlan.vht.capabilities',
+            'wlan.tag.number', 'wlan.rsn.capabilities',
+        ], timeout=30)
 
         # Deduplicate by BSSID, keep strongest signal
         bssid_map = {}
@@ -2134,7 +2107,12 @@ def scan_with_monitor(adapter, duration=5):
 
     finally:
         try:
-            os.unlink(output_path)
+            subprocess.run(['sudo', 'screen', '-S', session_name, '-X', 'quit'],
+                           capture_output=True, timeout=3)
+        except Exception:
+            pass
+        try:
+            os.unlink(pcap_path)
         except Exception:
             pass
 
