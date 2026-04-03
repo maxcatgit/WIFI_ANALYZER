@@ -65,7 +65,8 @@
     <div class="header">
         <h1>Wi-Fi Channel Analysis</h1>
         <div>
-            <button class="btn btn-primary" id="scan-btn" onclick="doScan()">Scan &amp; Analyse</button>
+            <button class="btn btn-primary" id="scan-btn" onclick="doScan('/scan')">Scan (wlan0)</button>
+            <button class="btn btn-primary" id="mon-scan-btn" onclick="doScan('/scan/monitor')" style="background:#6610f2;">Scan (monitor)</button>
             <a href="/" class="btn btn-secondary btn-sm">Capture</a>
             <a href="/config" class="btn btn-secondary btn-sm">Config</a>
             <a href="/networks" class="btn btn-secondary btn-sm">Scanner</a>
@@ -129,25 +130,28 @@ const esc = s => { const d = document.createElement('div'); d.textContent = s; r
 const STANDARD_24 = [1, 6, 11];
 const ALL_24 = [1,2,3,4,5,6,7,8,9,10,11,12,13];
 
-function doScan() {
-    const btn = document.getElementById('scan-btn');
+function doScan(url) {
+    const isMonitor = url.includes('monitor');
+    const btn = document.getElementById(isMonitor ? 'mon-scan-btn' : 'scan-btn');
+    const btnLabel = isMonitor ? 'Scan (monitor)' : 'Scan (wlan0)';
     const status = document.getElementById('status-bar');
     btn.disabled = true;
     btn.textContent = 'Scanning...';
-    status.innerHTML = '<span class="spinner"></span> Scanning for networks...';
+    status.innerHTML = '<span class="spinner"></span> ' +
+        (isMonitor ? 'Monitor scan: capturing beacons on all bands...' : 'Scanning via wlan0...');
 
-    fetch('/scan')
+    fetch(url)
         .then(res => {
             if (!res.ok) return res.json().then(d => { throw new Error(d.error || 'Scan failed'); });
             return res.json();
         })
         .then(data => {
-            status.textContent = `${data.count} networks found at ${data.timestamp}`;
+            status.textContent = `${data.count} networks found via ${data.adapter || '?'} (${data.scan_method || '?'}) at ${data.timestamp}`;
             analyseChannels(data.networks);
             document.getElementById('results').classList.remove('hidden');
         })
         .catch(err => { status.textContent = 'Error: ' + err.message; })
-        .finally(() => { btn.disabled = false; btn.textContent = 'Scan & Analyse'; });
+        .finally(() => { btn.disabled = false; btn.textContent = btnLabel; });
 }
 
 function analyseChannels(networks) {
