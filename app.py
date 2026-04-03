@@ -374,7 +374,24 @@ def start_capture_func(adapters, filename, split_time, is_multi=False, capture_f
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=10)
         time.sleep(2)
         if not is_process_running(session_name):
-            return {'error': 'Failed to start capture process.'}, 500
+            # Try to get the screen log to see why it failed
+            diag = ''
+            try:
+                # Check if the interface exists and is up
+                iface_check = subprocess.run(['ip', 'link', 'show', adapters[0]],
+                                             capture_output=True, text=True, timeout=3)
+                if iface_check.returncode != 0:
+                    diag = f'Interface {adapters[0]} not found. '
+                elif 'DOWN' in iface_check.stdout:
+                    diag = f'Interface {adapters[0]} is DOWN. '
+                # Try running dumpcap directly to see the error
+                test_cmd = ['sudo', 'dumpcap', '-i', adapters[0], '-c', '1', '-w', '/dev/null']
+                test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=5)
+                if test_result.returncode != 0:
+                    diag += f'dumpcap error: {test_result.stderr.strip()}'
+            except Exception:
+                pass
+            return {'error': f'Failed to start capture process. {diag}'.strip()}, 500
         if is_multi:
             multi_state.update({
                 'busy': True,
