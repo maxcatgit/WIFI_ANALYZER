@@ -1911,16 +1911,16 @@ def scan_with_monitor(adapter, duration=5):
     pcap_path = tmpf.name
 
     try:
-        # Use dumpcap with NO BPF filter - same tool the capture page uses successfully.
-        # BPF filters for 802.11 subtypes break on many drivers. We capture everything
-        # for a few seconds, then extract beacons with tshark afterwards.
+        # Capture all frames for a few seconds while hopping channels.
+        # No sudo needed - dumpcap has CAP_NET_RAW from setcap.
+        # This means the pcap is owned by pi, so tshark can read it.
         capture_cmd = [
-            'sudo', 'dumpcap', '-i', adapter, '-w', pcap_path,
+            'dumpcap', '-i', adapter, '-w', pcap_path,
             '-a', f'duration:{duration}', '-q',
         ]
         capture_proc = subprocess.Popen(capture_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        # Channel hop while capturing - same method as the working capture page
+        # Channel hop while capturing - needs sudo for iw
         time.sleep(0.5)  # Let dumpcap initialise
         for freq in scan_freqs:
             if capture_proc.poll() is not None:
@@ -1929,9 +1929,9 @@ def scan_with_monitor(adapter, duration=5):
             if not freq_info:
                 continue
             bw = freq_info.get('bandwidth', 'HT20')
-            cmd = ['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(freq), bw]
             try:
-                subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+                subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(freq), bw],
+                               capture_output=True, text=True, timeout=2)
             except Exception:
                 pass
             time.sleep(dwell_ms / 1000.0)
@@ -1941,13 +1941,38 @@ def scan_with_monitor(adapter, duration=5):
             capture_proc.wait(timeout=duration + 5)
         except subprocess.TimeoutExpired:
             capture_proc.kill()
-        time.sleep(0.2)  # Let file flush
+        time.sleep(0.2)
 
-        # Make pcap readable by tshark (dumpcap ran as root, tshark runs as pi)
-        try:
+        # Check if pcap has data
+        pcap_size = os.path.getsize(pcap_path) if os.path.exists(pcap_path) else 0
+        if pcap_size < 100:
+            # dumpcap without sudo might have failed, retry with sudo
+            capture_cmd2 = [
+                'sudo', 'dumpcap', '-i', adapter, '-w', pcap_path,
+                '-a', f'duration:{duration}', '-q',
+            ]
+            capture_proc2 = subprocess.Popen(capture_cmd2, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            time.sleep(0.5)
+            for freq in scan_freqs:
+                if capture_proc2.poll() is not None:
+                    break
+                freq_info = FREQ_TO_CHANNEL.get(freq)
+                if not freq_info:
+                    continue
+                bw = freq_info.get('bandwidth', 'HT20')
+                try:
+                    subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(freq), bw],
+                                   capture_output=True, text=True, timeout=2)
+                except Exception:
+                    pass
+                time.sleep(dwell_ms / 1000.0)
+            try:
+                capture_proc2.wait(timeout=duration + 5)
+            except subprocess.TimeoutExpired:
+                capture_proc2.kill()
+            time.sleep(0.2)
+            # Fix permissions if sudo was used
             subprocess.run(['sudo', 'chmod', '644', pcap_path], capture_output=True, timeout=3)
-        except Exception:
-            pass
 
         # Parse the captured beacons with tshark
         rows = run_tshark(pcap_path, 'wlan.fc.type_subtype == 0x0008', [
