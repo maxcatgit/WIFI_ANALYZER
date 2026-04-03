@@ -4309,7 +4309,7 @@ def api_config_adapters():
 
 @app.route('/api/config/setup_monitor', methods=['POST'])
 def api_config_setup_monitor():
-    """Put an adapter into monitor mode. Tries multiple methods in order."""
+    """Put an adapter into monitor mode using airmon-ng (same as capture page)."""
     data = request.get_json()
     interface = data.get('interface', '')
     if not interface or not interface.startswith('wlan') or interface == 'wlan0':
@@ -4320,7 +4320,6 @@ def api_config_setup_monitor():
         iface_info = next((i for i in interfaces if i['interface'] == interface), None)
         if not iface_info:
             return jsonify({'error': f'Interface {interface} not found'}), 404
-        phy = iface_info['phy'].replace('#', '')  # phy#1 -> phy1
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -4330,59 +4329,17 @@ def api_config_setup_monitor():
     existing_mon = next((i for i in interfaces if i['interface'] == mon_name and i['type'] == 'monitor'), None)
     if existing_mon:
         return jsonify({'ok': True, 'interface': mon_name, 'message': f'{mon_name} already in monitor mode'})
-
-    # Also check if the interface itself is already monitor
     if iface_info['type'] == 'monitor':
         return jsonify({'ok': True, 'interface': interface, 'message': f'{interface} already in monitor mode'})
 
-    errors = []
-
-    # Method 1: Convert existing interface (down -> set type monitor -> rename -> up)
-    # Most drivers require this because they can't have managed + monitor on same phy
-    try:
-        subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'down'],
-                       capture_output=True, text=True, check=True, timeout=5)
-        subprocess.run(['sudo', 'iw', 'dev', interface, 'set', 'type', 'monitor'],
-                       capture_output=True, text=True, check=True, timeout=5)
-        subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'name', mon_name],
-                       capture_output=True, text=True, check=True, timeout=5)
-        subprocess.run(['sudo', 'ip', 'link', 'set', mon_name, 'up'],
-                       capture_output=True, text=True, check=True, timeout=5)
-        return jsonify({'ok': True, 'interface': mon_name, 'method': 'convert',
-                       'message': f'{interface} converted to {mon_name} (monitor mode)'})
-    except subprocess.CalledProcessError as e:
-        errors.append(f'Convert failed: {e.stderr.strip()}')
-        # Try to bring it back up in case it's stuck down
-        subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'up'],
-                       capture_output=True, text=True, timeout=3)
-
-    # Method 2: Delete managed interface, create monitor interface on same phy
-    try:
-        subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'down'],
-                       capture_output=True, text=True, timeout=5)
-        subprocess.run(['sudo', 'iw', 'dev', interface, 'del'],
-                       capture_output=True, text=True, check=True, timeout=5)
-        subprocess.run(['sudo', 'iw', 'phy', phy, 'interface', 'add', mon_name, 'type', 'monitor'],
-                       capture_output=True, text=True, check=True, timeout=5)
-        subprocess.run(['sudo', 'ip', 'link', 'set', mon_name, 'up'],
-                       capture_output=True, text=True, check=True, timeout=5)
-        return jsonify({'ok': True, 'interface': mon_name, 'method': 'delete+create',
-                       'message': f'{interface} replaced with {mon_name} (monitor mode)'})
-    except subprocess.CalledProcessError as e:
-        errors.append(f'Delete+create failed: {e.stderr.strip()}')
-
-    # Method 3: airmon-ng (last resort, already proven to work in existing code)
+    # Use airmon-ng start — same proven method as the capture page
     try:
         subprocess.run(['sudo', 'airmon-ng', 'start', interface],
                        capture_output=True, text=True, check=True, timeout=15)
-        return jsonify({'ok': True, 'interface': mon_name, 'method': 'airmon-ng',
-                       'message': f'airmon-ng enabled monitor on {interface}'})
+        return jsonify({'ok': True, 'interface': mon_name,
+                       'message': f'{interface} set to monitor mode ({mon_name})'})
     except subprocess.CalledProcessError as e:
-        errors.append(f'airmon-ng failed: {e.stderr.strip()}')
-    except FileNotFoundError:
-        errors.append('airmon-ng not installed')
-
-    return jsonify({'error': 'All methods failed', 'details': errors}), 500
+        return jsonify({'error': f'airmon-ng failed: {e.stderr.strip()}'}), 500
 
 @app.route('/api/config/disable_monitor', methods=['POST'])
 def api_config_disable_monitor():
@@ -4392,26 +4349,13 @@ def api_config_disable_monitor():
     if not interface or interface == 'wlan0':
         return jsonify({'error': 'Invalid adapter'}), 400
 
-    # If it's wlanXmon, revert to wlanX managed
-    managed_name = interface.replace('mon', '') if interface.endswith('mon') else interface
-
     try:
-        # Down -> set type managed -> rename back -> up
-        subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'down'],
-                       capture_output=True, text=True, timeout=5)
-        subprocess.run(['sudo', 'iw', 'dev', interface, 'set', 'type', 'managed'],
-                       capture_output=True, text=True, timeout=5)
-        if interface != managed_name:
-            subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'name', managed_name],
-                           capture_output=True, text=True, timeout=5)
-            subprocess.run(['sudo', 'ip', 'link', 'set', managed_name, 'up'],
-                           capture_output=True, text=True, timeout=5)
-        else:
-            subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'up'],
-                           capture_output=True, text=True, timeout=5)
+        subprocess.run(['sudo', 'airmon-ng', 'stop', interface],
+                       capture_output=True, text=True, check=True, timeout=15)
+        managed_name = interface.replace('mon', '') if interface.endswith('mon') else interface
         return jsonify({'ok': True, 'message': f'{interface} reverted to {managed_name} (managed mode)'})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    except subprocess.CalledProcessError as e:
+        return jsonify({'error': f'airmon-ng stop failed: {e.stderr.strip()}'}), 500
 
 @app.route('/api/config/set_channel', methods=['POST'])
 def api_config_set_channel():
@@ -4482,15 +4426,9 @@ def api_config_auto_setup():
                     # Check if already in monitor mode
                     existing = next((i for i in interfaces if i['interface'] == mon_name and i['type'] == 'monitor'), None)
                     if not existing:
-                        # Convert: down -> set type monitor -> rename -> up
-                        subprocess.run(['sudo', 'ip', 'link', 'set', iface_name, 'down'],
-                                       capture_output=True, text=True, timeout=5)
-                        subprocess.run(['sudo', 'iw', 'dev', iface_name, 'set', 'type', 'monitor'],
-                                       capture_output=True, text=True, check=True, timeout=5)
-                        subprocess.run(['sudo', 'ip', 'link', 'set', iface_name, 'name', mon_name],
-                                       capture_output=True, text=True, check=True, timeout=5)
-                        subprocess.run(['sudo', 'ip', 'link', 'set', mon_name, 'up'],
-                                       capture_output=True, text=True, check=True, timeout=5)
+                        # Use airmon-ng — same proven method as capture page
+                        subprocess.run(['sudo', 'airmon-ng', 'start', iface_name],
+                                       capture_output=True, text=True, check=True, timeout=15)
 
                     # Set to first channel of the assigned band
                     channels = adapter['bands'].get(target_band, [])
