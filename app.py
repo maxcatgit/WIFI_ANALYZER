@@ -2217,20 +2217,55 @@ def scan_debug():
         steps.append({'step': 'no_monitor', 'msg': 'No monitor adapter found'})
         return jsonify({'steps': steps})
 
-    # Step 1: set channel
+    # Step 1: get supported frequencies
+    phy_name = None
     try:
-        r = subprocess.run(['sudo', 'iw', 'dev', mon_adapter, 'set', 'freq', '2437', 'HT20'],
+        interfaces = get_interfaces_info()
+        for iface in interfaces:
+            if iface['interface'] == mon_adapter:
+                phy_name = iface['phy'].replace('#', '')
+                break
+    except Exception:
+        pass
+
+    supported_freqs = []
+    if phy_name:
+        bands, _ = _get_phy_bands(phy_name)
+        for band_name, channels in bands.items():
+            supported_freqs.extend([ch['freq'] for ch in channels])
+        steps.append({'step': 'supported_freqs', 'phy': phy_name,
+                      'bands': list(bands.keys()),
+                      'total_channels': len(supported_freqs),
+                      'sample': supported_freqs[:20]})
+    else:
+        steps.append({'step': 'supported_freqs', 'error': 'could not find phy'})
+
+    # Step 2: set channel to first 2.4 GHz channel
+    test_freqs = [f for f in [2412, 2437, 2462] if f in supported_freqs]
+    if not test_freqs:
+        test_freqs = [2412, 2437, 2462]  # try anyway
+    try:
+        r = subprocess.run(['sudo', 'iw', 'dev', mon_adapter, 'set', 'freq', str(test_freqs[0]), 'HT20'],
                            capture_output=True, text=True, timeout=3)
-        steps.append({'step': 'set_channel', 'ok': r.returncode == 0, 'stderr': r.stderr.strip()})
+        steps.append({'step': 'set_channel', 'freq': test_freqs[0], 'ok': r.returncode == 0, 'stderr': r.stderr.strip()})
     except Exception as e:
         steps.append({'step': 'set_channel', 'ok': False, 'error': str(e)})
 
-    # Step 2: run dumpcap for 3 seconds - redirect to /dev/null (pipes cause 100% drop)
+    # Step 3: capture for 5 sec while hopping channels 1, 6, 11
     try:
-        r = subprocess.run(
-            'dumpcap -i ' + mon_adapter + ' -w ' + pcap_path + ' -a duration:3 -q </dev/null >/dev/null 2>&1',
-            shell=True, timeout=10)
-        steps.append({'step': 'dumpcap', 'ok': r.returncode == 0, 'returncode': r.returncode})
+        shell_cmd = f'dumpcap -i {mon_adapter} -w {pcap_path} -a duration:5 -q </dev/null >/dev/null 2>&1 &'
+        subprocess.run(shell_cmd, shell=True, timeout=3)
+        time.sleep(0.3)
+
+        hop_results = []
+        for freq in test_freqs:
+            r = subprocess.run(['sudo', 'iw', 'dev', mon_adapter, 'set', 'freq', str(freq), 'HT20'],
+                               capture_output=True, text=True, timeout=2)
+            hop_results.append({'freq': freq, 'ok': r.returncode == 0})
+            time.sleep(1.5)  # 1.5 sec per channel = enough for beacons
+
+        time.sleep(2)  # wait for dumpcap to finish
+        steps.append({'step': 'dumpcap_with_hopping', 'ok': True, 'channels_hopped': hop_results})
     except Exception as e:
         steps.append({'step': 'dumpcap', 'ok': False, 'error': str(e)})
 
@@ -2267,7 +2302,15 @@ def scan_debug():
     except Exception as e:
         steps.append({'step': 'beacons', 'error': str(e)})
 
-    # Step 6: tshark - extract probe responses
+    # Step 6: show first 10 frames raw (what did we actually capture?)
+    try:
+        r = subprocess.run(['tshark', '-r', pcap_path, '-c', '10'],
+                           capture_output=True, text=True, timeout=10)
+        steps.append({'step': 'raw_frames', 'first_10': r.stdout.strip().split('\n')[:10]})
+    except Exception as e:
+        steps.append({'step': 'raw_frames', 'error': str(e)})
+
+    # Step 7: tshark - extract probe responses
     try:
         r = subprocess.run(['tshark', '-r', pcap_path,
                            '-Y', 'wlan.fc.type_subtype == 0x0005',
