@@ -1874,23 +1874,22 @@ def scan_with_monitor(adapter, duration=5):
     # ~350ms per channel = enough to catch at least 3 beacons (typical interval 102.4ms)
     dwell_ms = max(300, int((duration * 1000) / len(scan_freqs)))
 
-    # Capture all frames (no BPF filter - more reliable) into a temp file
     tmpf = tempfile.NamedTemporaryFile(suffix='.pcap', delete=False)
     tmpf.close()
     pcap_path = tmpf.name
 
     try:
-        # Use tcpdump for capture (simpler, more reliable than tshark for raw capture)
+        # Use dumpcap with NO BPF filter - same tool the capture page uses successfully.
+        # BPF filters for 802.11 subtypes break on many drivers. We capture everything
+        # for a few seconds, then extract beacons with tshark afterwards.
         capture_cmd = [
-            'sudo', 'tcpdump', '-i', adapter, '-w', pcap_path,
-            '-G', str(duration), '-W', '1',  # Stop after duration seconds
-            '--immediate-mode', '-q',
-            'type', 'mgt', 'subtype', 'beacon',  # BPF: only beacon frames
+            'sudo', 'dumpcap', '-i', adapter, '-w', pcap_path,
+            '-a', f'duration:{duration}', '-q',
         ]
         capture_proc = subprocess.Popen(capture_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        # Channel hop while capturing
-        time.sleep(0.5)  # Let tcpdump initialise
+        # Channel hop while capturing - same method as the working capture page
+        time.sleep(0.5)  # Let dumpcap initialise
         for freq in scan_freqs:
             if capture_proc.poll() is not None:
                 break
@@ -1898,34 +1897,19 @@ def scan_with_monitor(adapter, duration=5):
             if not freq_info:
                 continue
             bw = freq_info.get('bandwidth', 'HT20')
+            cmd = ['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(freq), bw]
             try:
-                subprocess.run(
-                    ['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(freq), bw],
-                    capture_output=True, text=True, timeout=2
-                )
-            except Exception:
-                # Try without bandwidth arg (some drivers don't support it)
-                try:
-                    subprocess.run(
-                        ['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(freq)],
-                        capture_output=True, text=True, timeout=2
-                    )
-                except Exception:
-                    pass
-            time.sleep(dwell_ms / 1000.0)
-
-        # Stop tcpdump
-        try:
-            capture_proc.terminate()
-            capture_proc.wait(timeout=3)
-        except Exception:
-            try:
-                capture_proc.kill()
+                subprocess.run(cmd, capture_output=True, text=True, timeout=2)
             except Exception:
                 pass
-        # Also kill any lingering tcpdump (belt and suspenders)
-        subprocess.run(['sudo', 'killall', '-q', 'tcpdump'], capture_output=True, timeout=2)
-        time.sleep(0.3)  # Let file flush
+            time.sleep(dwell_ms / 1000.0)
+
+        # Wait for dumpcap to finish (it stops after duration seconds)
+        try:
+            capture_proc.wait(timeout=duration + 5)
+        except subprocess.TimeoutExpired:
+            capture_proc.kill()
+        time.sleep(0.2)  # Let file flush
 
         # Parse the captured beacons with tshark
         rows = run_tshark(pcap_path, 'wlan.fc.type_subtype == 0x0008', [
