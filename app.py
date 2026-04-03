@@ -1887,50 +1887,24 @@ def get_monitor_adapter():
 
 def scan_with_monitor(adapter, duration=5):
     """
-    Scan using monitor adapter. Uses screen+dumpcap (same as capture page)
-    then reads the pcap with tshark.
+    Scan using monitor adapter. Single shell command, blocking.
     """
-    scan_freqs = [
-        2412, 2437, 2462,
-        5180, 5260, 5500, 5580, 5660, 5745, 5825,
-        5955, 6035, 6115, 6275, 6435,
-    ]
-    dwell_ms = max(300, int((duration * 1000) / len(scan_freqs)))
     pcap_path = f'/tmp/wifi_scan_{uuid.uuid4().hex[:8]}.pcap'
-    session_name = 'wifi_scan_mon'
 
     try:
-        # Kill any leftover scan session
-        subprocess.run(['sudo', 'screen', '-S', session_name, '-X', 'quit'],
-                       capture_output=True, timeout=3)
-        time.sleep(0.2)
+        # One shell command. Blocking. Same dumpcap that works from command line.
+        shell_cmd = f'timeout {duration} dumpcap -i {adapter} -w {pcap_path} -q 2>/dev/null; true'
+        subprocess.run(shell_cmd, shell=True, timeout=duration + 5)
+        time.sleep(0.3)
 
-        # Start capture in screen - EXACT same method as the working capture page
-        cmd = ['sudo', 'screen', '-dmS', session_name,
-               'sudo', '-u', RUNNING_USER, 'dumpcap',
-               '-i', adapter, '-w', pcap_path, '-q']
-        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=5)
-        time.sleep(1)
-
-        # Channel hop while capturing
-        for freq in scan_freqs:
-            if not is_process_running(session_name):
-                break
-            freq_info = FREQ_TO_CHANNEL.get(freq)
-            if not freq_info:
-                continue
-            bw = freq_info.get('bandwidth', 'HT20')
-            try:
-                subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(freq), bw],
-                               capture_output=True, text=True, timeout=2)
-            except Exception:
-                pass
-            time.sleep(dwell_ms / 1000.0)
-
-        # Stop the capture
-        subprocess.run(['sudo', 'screen', '-S', session_name, '-X', 'quit'],
-                       capture_output=True, timeout=3)
-        time.sleep(0.5)
+        # If pcap is empty or missing, the adapter isn't capturing
+        pcap_size = 0
+        try:
+            pcap_size = os.path.getsize(pcap_path)
+        except OSError:
+            pass
+        if pcap_size < 100:
+            return [], adapter
 
         # Parse beacons from the pcap
         rows = run_tshark(pcap_path, 'wlan.fc.type_subtype == 0x0008', [
@@ -2106,11 +2080,6 @@ def scan_with_monitor(adapter, duration=5):
         return networks, adapter
 
     finally:
-        try:
-            subprocess.run(['sudo', 'screen', '-S', session_name, '-X', 'quit'],
-                           capture_output=True, timeout=3)
-        except Exception:
-            pass
         try:
             os.unlink(pcap_path)
         except Exception:
