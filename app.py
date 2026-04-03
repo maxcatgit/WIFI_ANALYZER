@@ -2210,10 +2210,18 @@ def scan_debug():
                 ['sudo', 'iw', 'dev', 'wlan0', 'scan'],
                 capture_output=True, text=True, timeout=15
             )
-            iw_nets = parse_iw_scan(result.stdout) if result.returncode == 0 else []
-            info['iw_fallback_count'] = len(iw_nets)
-        except Exception:
-            info['iw_fallback_count'] = 'failed'
+            if result.returncode == 0:
+                iw_nets = parse_iw_scan(result.stdout)
+                info['iw_fallback_count'] = len(iw_nets)
+            else:
+                info['iw_fallback_count'] = 0
+                info['iw_fallback_error'] = result.stderr.strip()
+        except subprocess.TimeoutExpired:
+            info['iw_fallback_count'] = 0
+            info['iw_fallback_error'] = 'scan timed out (wlan0 may be down)'
+        except Exception as e:
+            info['iw_fallback_count'] = 0
+            info['iw_fallback_error'] = str(e)
     else:
         info['scan_method'] = 'iw dev wlan0 scan (managed mode)'
         try:
