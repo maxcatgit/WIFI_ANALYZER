@@ -1937,8 +1937,8 @@ def scan_with_monitor(adapter, duration=6):
                        capture_output=True, text=True, timeout=2)
         time.sleep(0.1)
 
-        # Start dumpcap in background via shell, hop channels, then stop
-        shell_cmd = f'timeout {duration} dumpcap -i {adapter} -w {pcap_path} -q 2>/dev/null &'
+        # Start dumpcap in background - ALL I/O to /dev/null (pipes cause 100% packet drop)
+        shell_cmd = f'timeout {duration} dumpcap -i {adapter} -w {pcap_path} -a duration:{duration} -q </dev/null >/dev/null 2>&1 &'
         subprocess.run(shell_cmd, shell=True, timeout=3)
         time.sleep(0.5)
 
@@ -1951,8 +1951,8 @@ def scan_with_monitor(adapter, duration=6):
                 pass
             time.sleep(dwell_ms / 1000.0)
 
-        # Wait for dumpcap to finish (timeout command kills it)
-        time.sleep(1)
+        # Wait for dumpcap to finish
+        time.sleep(2)
 
         # If pcap is empty or missing, return empty
         pcap_size = 0
@@ -2225,12 +2225,12 @@ def scan_debug():
     except Exception as e:
         steps.append({'step': 'set_channel', 'ok': False, 'error': str(e)})
 
-    # Step 2: run dumpcap for 3 seconds (BLOCKING, no background, no shell)
+    # Step 2: run dumpcap for 3 seconds - redirect to /dev/null (pipes cause 100% drop)
     try:
-        r = subprocess.run(['dumpcap', '-i', mon_adapter, '-w', pcap_path, '-a', 'duration:3', '-q'],
-                           capture_output=True, text=True, timeout=10)
-        steps.append({'step': 'dumpcap', 'ok': r.returncode == 0,
-                      'stdout': r.stdout[:500], 'stderr': r.stderr[:500]})
+        r = subprocess.run(
+            'dumpcap -i ' + mon_adapter + ' -w ' + pcap_path + ' -a duration:3 -q </dev/null >/dev/null 2>&1',
+            shell=True, timeout=10)
+        steps.append({'step': 'dumpcap', 'ok': r.returncode == 0, 'returncode': r.returncode})
     except Exception as e:
         steps.append({'step': 'dumpcap', 'ok': False, 'error': str(e)})
 
