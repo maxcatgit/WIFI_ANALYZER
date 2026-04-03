@@ -140,6 +140,7 @@
         <div class="summary-item">6 GHz: <strong id="count-6">0</strong></div>
         <div class="summary-item">Open: <strong id="count-open">0</strong></div>
         <div class="summary-item">Last scan: <strong id="scan-time">-</strong></div>
+        <div class="summary-item">Adapter: <strong id="scan-adapter">-</strong></div>
     </div>
 
     <div class="vuln-summary" id="vuln-summary" style="display: none;"></div>
@@ -239,6 +240,7 @@
             document.getElementById('count-6').textContent = data.networks.filter(n => n.band === '6 GHz').length;
             document.getElementById('count-open').textContent = data.networks.filter(n => n.security === 'Open').length;
             document.getElementById('scan-time').textContent = data.timestamp;
+                    document.getElementById('scan-adapter').textContent = (data.adapter || 'wlan0') + (data.scan_method === 'monitor' ? ' (monitor)' : ' (managed)');
         }
 
         function updateVulnSummary(networks) {
