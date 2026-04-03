@@ -1891,8 +1891,6 @@ def scan_with_monitor(adapter, duration=5):
     Hops through 2.4, 5, and 6 GHz channels while capturing beacon frames.
     Returns list of networks in the same format as parse_iw_scan.
     """
-    import tempfile
-
     # Fewer channels, longer dwell = more beacons caught per channel
     scan_freqs = [
         # 2.4 GHz - the 3 non-overlapping channels
@@ -1903,25 +1901,23 @@ def scan_with_monitor(adapter, duration=5):
         5955, 6035, 6115, 6275, 6435,
     ]
 
-    # ~350ms per channel = enough to catch at least 3 beacons (typical interval 102.4ms)
     dwell_ms = max(300, int((duration * 1000) / len(scan_freqs)))
 
-    tmpf = tempfile.NamedTemporaryFile(suffix='.pcap', delete=False)
-    tmpf.close()
-    pcap_path = tmpf.name
+    # Use a simple path - no tempfile (dumpcap doesn't like overwriting existing files)
+    pcap_path = f'/tmp/wifi_scan_{uuid.uuid4().hex[:8]}.pcap'
 
     try:
-        # Capture all frames for a few seconds while hopping channels.
-        # No sudo needed - dumpcap has CAP_NET_RAW from setcap.
-        # This means the pcap is owned by pi, so tshark can read it.
-        capture_cmd = [
-            'dumpcap', '-i', adapter, '-w', pcap_path,
-            '-a', f'duration:{duration}', '-q',
-        ]
-        capture_proc = subprocess.Popen(capture_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Run dumpcap exactly like the manual command that works:
+        #   dumpcap -i wlan1mon -w /tmp/scan.pcap -a duration:5 -q
+        # No sudo (setcap gives permissions), no pipes (avoid blocking)
+        DEVNULL = open(os.devnull, 'w')
+        capture_proc = subprocess.Popen(
+            ['dumpcap', '-i', adapter, '-w', pcap_path, '-a', f'duration:{duration}', '-q'],
+            stdout=DEVNULL, stderr=DEVNULL,
+        )
 
-        # Channel hop while capturing - needs sudo for iw
-        time.sleep(0.5)  # Let dumpcap initialise
+        # Channel hop while capturing
+        time.sleep(0.5)
         for freq in scan_freqs:
             if capture_proc.poll() is not None:
                 break
@@ -1936,43 +1932,13 @@ def scan_with_monitor(adapter, duration=5):
                 pass
             time.sleep(dwell_ms / 1000.0)
 
-        # Wait for dumpcap to finish (it stops after duration seconds)
+        # Wait for dumpcap to finish
         try:
             capture_proc.wait(timeout=duration + 5)
         except subprocess.TimeoutExpired:
             capture_proc.kill()
-        time.sleep(0.2)
-
-        # Check if pcap has data
-        pcap_size = os.path.getsize(pcap_path) if os.path.exists(pcap_path) else 0
-        if pcap_size < 100:
-            # dumpcap without sudo might have failed, retry with sudo
-            capture_cmd2 = [
-                'sudo', 'dumpcap', '-i', adapter, '-w', pcap_path,
-                '-a', f'duration:{duration}', '-q',
-            ]
-            capture_proc2 = subprocess.Popen(capture_cmd2, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            time.sleep(0.5)
-            for freq in scan_freqs:
-                if capture_proc2.poll() is not None:
-                    break
-                freq_info = FREQ_TO_CHANNEL.get(freq)
-                if not freq_info:
-                    continue
-                bw = freq_info.get('bandwidth', 'HT20')
-                try:
-                    subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(freq), bw],
-                                   capture_output=True, text=True, timeout=2)
-                except Exception:
-                    pass
-                time.sleep(dwell_ms / 1000.0)
-            try:
-                capture_proc2.wait(timeout=duration + 5)
-            except subprocess.TimeoutExpired:
-                capture_proc2.kill()
-            time.sleep(0.2)
-            # Fix permissions if sudo was used
-            subprocess.run(['sudo', 'chmod', '644', pcap_path], capture_output=True, timeout=3)
+        DEVNULL.close()
+        time.sleep(0.3)
 
         # Parse the captured beacons with tshark
         rows = run_tshark(pcap_path, 'wlan.fc.type_subtype == 0x0008', [
