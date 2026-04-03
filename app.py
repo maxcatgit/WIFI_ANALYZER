@@ -1943,6 +1943,12 @@ def scan_with_monitor(adapter, duration=5):
             capture_proc.kill()
         time.sleep(0.2)  # Let file flush
 
+        # Make pcap readable by tshark (dumpcap ran as root, tshark runs as pi)
+        try:
+            subprocess.run(['sudo', 'chmod', '644', pcap_path], capture_output=True, timeout=3)
+        except Exception:
+            pass
+
         # Parse the captured beacons with tshark
         rows = run_tshark(pcap_path, 'wlan.fc.type_subtype == 0x0008', [
             'wlan.bssid', 'wlan.ssid', 'radiotap.channel.freq',
