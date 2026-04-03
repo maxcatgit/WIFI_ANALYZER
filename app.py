@@ -1299,188 +1299,173 @@ OUI_MAP = dict(_OUI_BUILTIN)
 if _oui_from_file:
     OUI_MAP.update(_oui_from_file)
 
-def parse_iw_scan(output):
-    networks = []
-    current = None
+def _parse_rsn_wpa_block(lines):
+    """Parse RSN or WPA block lines into a dict. Works regardless of indentation format."""
+    info = {'pairwise': [], 'akm': [], 'group': '', 'capabilities': ''}
+    text = '\n'.join(lines)
+    m = re.search(r'Group cipher:\s*(.+)', text)
+    if m:
+        info['group'] = m.group(1).strip()
+    m = re.search(r'Pairwise ciphers?:\s*(.+)', text)
+    if m:
+        info['pairwise'] = [c.strip() for c in m.group(1).split()]
+    m = re.search(r'Authentication suites?:\s*(.+)', text)
+    if m:
+        info['akm'] = [a.strip() for a in m.group(1).split()]
+    m = re.search(r'Capabilities:\s*(.+)', text)
+    if m:
+        info['capabilities'] = m.group(1).strip()
+    return info if (info['akm'] or info['pairwise'] or info['group']) else None
 
-    # Track sub-block context for RSN/WPA parsing
-    in_rsn = False
-    in_wpa = False
-    rsn_info = {}
-    wpa_info = {}
+
+def parse_iw_scan(output):
+    # Split output into per-BSS blocks first, then parse each block independently.
+    # This avoids fragile line-by-line state tracking.
+    bss_blocks = []
+    current_lines = []
+    current_bssid = None
 
     for line in output.splitlines():
-        # New BSS block
         m = re.match(r'^BSS ([0-9a-f:]{17})', line)
         if m:
-            if current:
-                current['rsn'] = rsn_info if rsn_info else None
-                current['wpa'] = wpa_info if wpa_info else None
-                networks.append(current)
-            bssid = m.group(1).upper()
-            current = {
-                'bssid': bssid,
-                'ssid': '',
-                'freq': 0,
-                'channel': '',
-                'band': '',
-                'signal': 0,
-                'capability': '',
-                'ht': False,
-                'vht': False,
-                'he': False,
-                'he_eht': False,
-                'ht_secondary_offset': '',
-                'vht_channel_width': '',
-                'vendor': OUI_MAP.get(bssid[:8], 'Unknown'),
-                'wps': False,
-                'wps_version': '',
-                'wps_state': 0,
-                'pmf_capable': False,
-                'pmf_required': False,
-            }
-            in_rsn = False
-            in_wpa = False
-            rsn_info = {}
-            wpa_info = {}
-            continue
+            if current_bssid:
+                bss_blocks.append((current_bssid, current_lines))
+            current_bssid = m.group(1).upper()
+            current_lines = []
+        elif current_bssid is not None:
+            current_lines.append(line)
+    if current_bssid:
+        bss_blocks.append((current_bssid, current_lines))
 
-        if not current:
-            continue
+    networks = []
+    for bssid, lines in bss_blocks:
+        text = '\n'.join(lines)
+        net = {
+            'bssid': bssid, 'ssid': '', 'freq': 0, 'channel': '', 'band': '',
+            'signal': 0, 'capability': '',
+            'ht': False, 'vht': False, 'he': False, 'he_eht': False,
+            'ht_secondary_offset': '', 'vht_channel_width': '',
+            'vendor': OUI_MAP.get(bssid[:8], 'Unknown'),
+            'wps': False, 'wps_version': '', 'wps_state': 0,
+            'pmf_capable': False, 'pmf_required': False,
+            'rsn': None, 'wpa': None,
+        }
 
-        stripped = line.strip()
-
-        # Detect end of RSN/WPA sub-block
-        # RSN/WPA content lines are indented with tabs and start with "* "
-        # The block ends when we hit a line that is NOT part of the RSN/WPA structure
-        if in_rsn and stripped and not stripped.startswith('*') and not stripped.startswith('RSN'):
-            # Check if this is a non-RSN section header (e.g. "HT capabilities:", "WPA:", etc.)
-            if not line.startswith('\t\t'):
-                in_rsn = False
-        if in_wpa and stripped and not stripped.startswith('*') and not stripped.startswith('WPA'):
-            if not line.startswith('\t\t'):
-                in_wpa = False
-
-        # RSN block start (handles both "RSN:" and "RSN:	 * Version: 1")
-        if stripped == 'RSN:' or stripped.startswith('RSN:'):
-            in_rsn = True
-            in_wpa = False
-            rsn_info = {'pairwise': [], 'akm': [], 'group': '', 'capabilities': ''}
-            continue
-        # WPA block start
-        if stripped == 'WPA:' or stripped.startswith('WPA:'):
-            in_wpa = True
-            in_rsn = False
-            wpa_info = {'pairwise': [], 'akm': [], 'group': '', 'capabilities': ''}
-            continue
-
-        # Parse inside RSN/WPA blocks
-        if in_rsn or in_wpa:
-            info = rsn_info if in_rsn else wpa_info
-            m_group = re.match(r'\s+\* Group cipher: (.+)', line)
-            if m_group:
-                info['group'] = m_group.group(1).strip()
-                continue
-            m_pair = re.match(r'\s+\* Pairwise ciphers: (.+)', line)
-            if m_pair:
-                info['pairwise'] = [c.strip() for c in m_pair.group(1).split()]
-                continue
-            m_akm = re.match(r'\s+\* Authentication suites: (.+)', line)
-            if m_akm:
-                info['akm'] = [a.strip() for a in m_akm.group(1).split()]
-                continue
-            m_rsn_cap = re.match(r'\s+\* Capabilities: (.+)', line)
-            if m_rsn_cap:
-                info['capabilities'] = m_rsn_cap.group(1).strip()
-                cap_text = info['capabilities'].upper()
-                if in_rsn:
-                    if 'MFPC' in cap_text or 'MFP-CAPABLE' in cap_text or 'MANAGEMENTFRAMEPROTECTION' in cap_text:
-                        current['pmf_capable'] = True
-                    if 'MFPR' in cap_text or 'MFP-REQUIRED' in cap_text:
-                        current['pmf_required'] = True
-                continue
-            # RSN capabilities as hex (e.g. "RSN capabilities: 0x000c")
-            m_rsn_cap_hex = re.match(r'\s+\* RSN capabilities:\s+(0x[0-9a-fA-F]+)', line)
-            if m_rsn_cap_hex and in_rsn:
-                cap_val = int(m_rsn_cap_hex.group(1), 16)
-                if cap_val & 0x0040:
-                    current['pmf_capable'] = True
-                if cap_val & 0x0080:
-                    current['pmf_required'] = True
-                continue
-
-        # Standard fields
-        m_ssid = re.match(r'\s+SSID: (.*)$', line)
-        if m_ssid:
-            ssid = m_ssid.group(1).strip()
+        # SSID
+        m = re.search(r'SSID: (.*)$', text, re.MULTILINE)
+        if m:
+            ssid = m.group(1).strip()
             if ssid and all(c == '\x00' for c in ssid):
                 ssid = ''
-            current['ssid'] = ssid
-            continue
+            net['ssid'] = ssid
 
-        m_freq = re.match(r'\s+freq: (\d+)', line)
-        if m_freq:
-            freq = int(m_freq.group(1))
-            current['freq'] = freq
+        # Frequency / channel / band
+        m = re.search(r'freq: (\d+)', text)
+        if m:
+            freq = int(m.group(1))
+            net['freq'] = freq
             freq_info = FREQ_TO_CHANNEL.get(freq, {})
-            current['channel'] = freq_info.get('channel', str(freq))
-            if freq < 3000:
-                current['band'] = '2.4 GHz'
-            elif freq < 5900:
-                current['band'] = '5 GHz'
+            net['channel'] = freq_info.get('channel', str(freq))
+            if freq < 3000: net['band'] = '2.4 GHz'
+            elif freq < 5900: net['band'] = '5 GHz'
+            else: net['band'] = '6 GHz'
+
+        # Signal
+        m = re.search(r'signal: ([\-\d.]+)', text)
+        if m:
+            net['signal'] = float(m.group(1))
+
+        # Capability
+        m = re.search(r'capability: (.+)$', text, re.MULTILINE)
+        if m:
+            net['capability'] = m.group(1).strip()
+
+        # Wi-Fi standards
+        if re.search(r'HT capabilities:', text): net['ht'] = True
+        if re.search(r'VHT capabilities:', text): net['vht'] = True
+        if re.search(r'HE capabilities:', text): net['he'] = True
+        if re.search(r'EHT capabilities:', text): net['he_eht'] = True
+
+        # HT secondary channel offset
+        m = re.search(r'secondary channel offset: (.+)', text)
+        if m:
+            net['ht_secondary_offset'] = m.group(1).strip()
+
+        # VHT channel width
+        m = re.search(r'channel width: (\d+)', text)
+        if m:
+            net['vht_channel_width'] = m.group(1).strip()
+
+        # WPS
+        if re.search(r'WPS:|Wi-Fi Protected Setup', text):
+            net['wps'] = True
+            m = re.search(r'Version: (\S+)', text)
+            if m:
+                net['wps_version'] = m.group(1).strip()
+            m = re.search(r'Wi-Fi Protected Setup State: (\d+)', text)
+            if m:
+                net['wps_state'] = int(m.group(1))
+
+        # RSN block: find all lines between "RSN:" and the next top-level section
+        rsn_match = re.search(r'^\tRSN:', text, re.MULTILINE)
+        if rsn_match:
+            rsn_start = rsn_match.start()
+            # Find where RSN block ends (next single-tab line that's not a continuation)
+            rsn_lines = []
+            started = False
+            for line in lines:
+                stripped = line.strip()
+                if not started:
+                    if stripped.startswith('RSN:'):
+                        started = True
+                        rsn_lines.append(line)
+                    continue
+                # RSN content lines are indented more than one tab, or start with * after tabs
+                if line.startswith('\t\t') or (line.startswith('\t') and stripped.startswith('*')):
+                    rsn_lines.append(line)
+                elif stripped == '':
+                    continue
+                else:
+                    break
+            net['rsn'] = _parse_rsn_wpa_block(rsn_lines)
+
+            # PMF from RSN capabilities
+            if net['rsn']:
+                cap_text = net['rsn'].get('capabilities', '').upper()
+                # Hex format: "0x000c"
+                m_hex = re.search(r'0x([0-9a-fA-F]+)', cap_text)
+                if m_hex:
+                    cap_val = int(m_hex.group(1), 16)
+                    if cap_val & 0x0040 or cap_val & 0x0080:
+                        net['pmf_capable'] = True
+                    if cap_val & 0x0080:
+                        net['pmf_required'] = True
+                # Text format: "MFPC MFPR" or "MFP-capable"
+                if 'MFPC' in cap_text or 'MFP-CAPABLE' in cap_text or 'MANAGEMENTFRAMEPROTECTION' in cap_text:
+                    net['pmf_capable'] = True
+                if 'MFPR' in cap_text or 'MFP-REQUIRED' in cap_text:
+                    net['pmf_required'] = True
+
+        # WPA block: same approach
+        wpa_started = False
+        wpa_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not wpa_started:
+                if stripped.startswith('WPA:'):
+                    wpa_started = True
+                    wpa_lines.append(line)
+                continue
+            if line.startswith('\t\t') or (line.startswith('\t') and stripped.startswith('*')):
+                wpa_lines.append(line)
+            elif stripped == '':
+                continue
             else:
-                current['band'] = '6 GHz'
-            continue
+                break
+        if wpa_lines:
+            net['wpa'] = _parse_rsn_wpa_block(wpa_lines)
 
-        m_signal = re.match(r'\s+signal: ([\-\d.]+)', line)
-        if m_signal:
-            current['signal'] = float(m_signal.group(1))
-            continue
-
-        m_cap = re.match(r'\s+capability: (.+)', line)
-        if m_cap:
-            current['capability'] = m_cap.group(1).strip()
-            continue
-
-        if re.match(r'\s+HT capabilities:', line):
-            current['ht'] = True
-            continue
-        if re.match(r'\s+VHT capabilities:', line):
-            current['vht'] = True
-            continue
-        if re.match(r'\s+HE capabilities:', line):
-            current['he'] = True
-            continue
-        if re.match(r'\s+EHT capabilities:', line):
-            current['he_eht'] = True
-            continue
-        if re.match(r'\s+WPS:', line) or 'Wi-Fi Protected Setup' in stripped:
-            current['wps'] = True
-            continue
-        m_wps_ver = re.match(r'\s+\* Version: (\S+)', line)
-        if m_wps_ver and current.get('wps'):
-            current['wps_version'] = m_wps_ver.group(1).strip()
-            continue
-        m_wps_state = re.match(r'\s+\* Wi-Fi Protected Setup State: (\d+)', line)
-        if m_wps_state and current.get('wps'):
-            current['wps_state'] = int(m_wps_state.group(1))
-            continue
-
-        m_ht_sec = re.match(r'\s+\* secondary channel offset: (.+)', line)
-        if m_ht_sec:
-            current['ht_secondary_offset'] = m_ht_sec.group(1).strip()
-            continue
-
-        m_vht_width = re.match(r'\s+\* channel width: (\d+)', line)
-        if m_vht_width:
-            current['vht_channel_width'] = m_vht_width.group(1).strip()
-            continue
-
-    # Don't forget the last BSS block
-    if current:
-        current['rsn'] = rsn_info if rsn_info else None
-        current['wpa'] = wpa_info if wpa_info else None
-        networks.append(current)
+        networks.append(net)
 
     # Post-process each network
     results = []
@@ -1885,6 +1870,42 @@ def scan_networks():
         return jsonify({'error': 'Scan timed out'}), 504
     finally:
         scan_lock.release()
+
+@app.route('/scan/debug', methods=['GET'])
+def scan_debug():
+    """Debug endpoint: returns raw iw scan output + parsed result for troubleshooting."""
+    try:
+        result = subprocess.run(
+            ['sudo', 'iw', 'dev', 'wlan0', 'scan'],
+            capture_output=True, text=True, timeout=15
+        )
+        raw = result.stdout
+        networks = parse_iw_scan(raw) if result.returncode == 0 else []
+
+        # Show first BSS block raw for debugging
+        first_bss = ''
+        lines = raw.split('\n')
+        bss_count = 0
+        for line in lines:
+            if line.startswith('BSS '):
+                bss_count += 1
+                if bss_count > 1:
+                    break
+            if bss_count == 1:
+                first_bss += line + '\n'
+
+        return jsonify({
+            'raw_first_bss': first_bss,
+            'raw_length': len(raw),
+            'raw_bss_count': raw.count('BSS '),
+            'parsed_count': len(networks),
+            'parsed_first': networks[0] if networks else None,
+            'stderr': result.stderr,
+            'returncode': result.returncode,
+            'oui_map_size': len(OUI_MAP),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)})
 
 # --- Pcap Analyzer ---
 
