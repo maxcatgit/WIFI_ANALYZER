@@ -1885,24 +1885,76 @@ def get_monitor_adapter():
     return None
 
 
-def scan_with_monitor(adapter, duration=5):
+def scan_with_monitor(adapter, duration=6):
     """
-    Scan using monitor adapter. Single shell command, blocking.
+    Scan using monitor adapter. Queries adapter's real supported frequencies,
+    hops only through those, captures with dumpcap, parses with tshark.
     """
+    # Find the phy for this adapter
+    phy_name = None
+    try:
+        interfaces = get_interfaces_info()
+        for iface in interfaces:
+            if iface['interface'] == adapter:
+                phy_name = iface['phy'].replace('#', '')
+                break
+    except Exception:
+        pass
+
+    # Get the adapter's actual supported frequencies (only non-disabled ones)
+    scan_freqs = []
+    if phy_name:
+        bands, _ = _get_phy_bands(phy_name)
+        # Pick representative channels: for 2.4 GHz use 1,6,11; for 5/6 GHz one per 80 MHz group
+        for band_name, channels in bands.items():
+            freqs = [ch['freq'] for ch in channels]
+            if '2.4' in band_name:
+                # Channels 1, 6, 11 (2412, 2437, 2462)
+                for target in [2412, 2437, 2462]:
+                    if target in freqs:
+                        scan_freqs.append((target, 'HT20'))
+            else:
+                # One frequency per 80 MHz group
+                seen_groups = set()
+                for f in sorted(freqs):
+                    group = f // 80  # rough 80 MHz grouping
+                    if group not in seen_groups:
+                        seen_groups.add(group)
+                        bw = '80MHz' if f >= 5000 else 'HT20'
+                        scan_freqs.append((f, bw))
+
+    # Fallback if we couldn't detect frequencies
+    if not scan_freqs:
+        scan_freqs = [(2412, 'HT20'), (2437, 'HT20'), (2462, 'HT20')]
+
+    dwell_ms = max(400, int((duration * 1000) / len(scan_freqs)))
     pcap_path = f'/tmp/wifi_scan_{uuid.uuid4().hex[:8]}.pcap'
 
     try:
-        # Set adapter to channel 6 (2437 MHz) first - most likely to have APs
-        subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'freq', '2437', 'HT20'],
+        # Set to first frequency (known good) before starting capture
+        first_freq, first_bw = scan_freqs[0]
+        subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(first_freq), first_bw],
                        capture_output=True, text=True, timeout=2)
         time.sleep(0.1)
 
-        # Capture for duration seconds on this channel
-        shell_cmd = f'timeout {duration} dumpcap -i {adapter} -w {pcap_path} -q 2>/dev/null; true'
-        subprocess.run(shell_cmd, shell=True, timeout=duration + 5)
-        time.sleep(0.3)
+        # Start dumpcap in background via shell, hop channels, then stop
+        shell_cmd = f'timeout {duration} dumpcap -i {adapter} -w {pcap_path} -q 2>/dev/null &'
+        subprocess.run(shell_cmd, shell=True, timeout=3)
+        time.sleep(0.5)
 
-        # If pcap is empty or missing, the adapter isn't capturing
+        # Hop through supported channels while dumpcap captures
+        for freq, bw in scan_freqs:
+            try:
+                subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(freq), bw],
+                               capture_output=True, text=True, timeout=2)
+            except Exception:
+                pass
+            time.sleep(dwell_ms / 1000.0)
+
+        # Wait for dumpcap to finish (timeout command kills it)
+        time.sleep(1)
+
+        # If pcap is empty or missing, return empty
         pcap_size = 0
         try:
             pcap_size = os.path.getsize(pcap_path)
@@ -1911,7 +1963,7 @@ def scan_with_monitor(adapter, duration=5):
         if pcap_size < 100:
             return [], adapter
 
-        # Parse beacons AND probe responses (both contain SSID/BSSID/security)
+        # Parse beacons AND probe responses
         rows = run_tshark(pcap_path,
             'wlan.fc.type_subtype == 0x0008 || wlan.fc.type_subtype == 0x0005', [
             'wlan.bssid', 'wlan.ssid', 'radiotap.channel.freq',
