@@ -1,0 +1,2 @@
+ ! dumpcap -i wlan1mon -w /tmp/test_nosudo.pcap -a duration:3 -q && ls -la /tmp/test_nosudo.pcap && tshark -r /tmp/test_nosudo.pcap -c 5
+ 
