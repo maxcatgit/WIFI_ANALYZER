@@ -1861,33 +1861,36 @@ def scan_with_monitor(adapter, duration=5):
     """
     import tempfile
 
-    # Channels to scan: 2.4 GHz (1,6,11), 5 GHz (36,44,52,60,100,108,116,124,132,140,149,157,165), 6 GHz sample
+    # Fewer channels, longer dwell = more beacons caught per channel
     scan_freqs = [
         # 2.4 GHz - the 3 non-overlapping channels
         2412, 2437, 2462,
-        # 5 GHz - one per 80 MHz group
-        5180, 5220, 5260, 5300, 5500, 5540, 5580, 5620, 5660, 5700, 5745, 5785, 5825,
-        # 6 GHz - sample channels
-        5955, 5995, 6035, 6075, 6115, 6195, 6275, 6355, 6435,
+        # 5 GHz - one per 80 MHz group (captures the full 80 MHz around each)
+        5180, 5260, 5500, 5580, 5660, 5745, 5825,
+        # 6 GHz - sample
+        5955, 6035, 6115, 6275, 6435,
     ]
 
-    dwell_ms = max(80, int((duration * 1000) / len(scan_freqs)))
+    # ~350ms per channel = enough to catch at least 3 beacons (typical interval 102.4ms)
+    dwell_ms = max(300, int((duration * 1000) / len(scan_freqs)))
 
-    # Capture beacons into a temp file while hopping channels
+    # Capture all frames (no BPF filter - more reliable) into a temp file
     tmpf = tempfile.NamedTemporaryFile(suffix='.pcap', delete=False)
     tmpf.close()
     pcap_path = tmpf.name
 
     try:
-        # Start tshark capture of beacons in background
+        # Use tcpdump for capture (simpler, more reliable than tshark for raw capture)
         capture_cmd = [
-            'sudo', 'tshark', '-i', adapter, '-a', f'duration:{duration}',
-            '-f', 'subtype beacon', '-w', pcap_path, '-q'
+            'sudo', 'tcpdump', '-i', adapter, '-w', pcap_path,
+            '-G', str(duration), '-W', '1',  # Stop after duration seconds
+            '--immediate-mode', '-q',
+            'type', 'mgt', 'subtype', 'beacon',  # BPF: only beacon frames
         ]
         capture_proc = subprocess.Popen(capture_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         # Channel hop while capturing
-        time.sleep(0.3)  # Let tshark start
+        time.sleep(0.5)  # Let tcpdump initialise
         for freq in scan_freqs:
             if capture_proc.poll() is not None:
                 break
@@ -1901,14 +1904,28 @@ def scan_with_monitor(adapter, duration=5):
                     capture_output=True, text=True, timeout=2
                 )
             except Exception:
-                pass
+                # Try without bandwidth arg (some drivers don't support it)
+                try:
+                    subprocess.run(
+                        ['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(freq)],
+                        capture_output=True, text=True, timeout=2
+                    )
+                except Exception:
+                    pass
             time.sleep(dwell_ms / 1000.0)
 
-        # Wait for tshark to finish
+        # Stop tcpdump
         try:
-            capture_proc.wait(timeout=duration + 5)
-        except subprocess.TimeoutExpired:
-            capture_proc.kill()
+            capture_proc.terminate()
+            capture_proc.wait(timeout=3)
+        except Exception:
+            try:
+                capture_proc.kill()
+            except Exception:
+                pass
+        # Also kill any lingering tcpdump (belt and suspenders)
+        subprocess.run(['sudo', 'killall', '-q', 'tcpdump'], capture_output=True, timeout=2)
+        time.sleep(0.3)  # Let file flush
 
         # Parse the captured beacons with tshark
         rows = run_tshark(pcap_path, 'wlan.fc.type_subtype == 0x0008', [
@@ -2104,23 +2121,32 @@ def scan_networks():
         adapter_used = 'wlan0'
 
         # Check for monitor-mode adapter
+        networks = []
         mon_adapter = get_monitor_adapter()
         if mon_adapter:
             try:
                 networks, adapter_used = scan_with_monitor(mon_adapter, duration=5)
-                scan_method = 'monitor'
+                if networks:
+                    scan_method = 'monitor'
             except Exception:
-                # Fall back to iw scan
-                mon_adapter = None
+                networks = []
 
-        if not mon_adapter:
-            result = subprocess.run(
-                ['sudo', 'iw', 'dev', 'wlan0', 'scan'],
-                capture_output=True, text=True, timeout=15
-            )
-            if result.returncode != 0:
-                return jsonify({'error': result.stderr.strip() or 'Scan failed'}), 500
-            networks = parse_iw_scan(result.stdout)
+        # Fall back to iw scan if monitor scan returned nothing
+        if not networks:
+            try:
+                result = subprocess.run(
+                    ['sudo', 'iw', 'dev', 'wlan0', 'scan'],
+                    capture_output=True, text=True, timeout=15
+                )
+                if result.returncode == 0:
+                    networks = parse_iw_scan(result.stdout)
+                    scan_method = 'iw'
+                    adapter_used = 'wlan0'
+            except Exception:
+                pass
+
+        if not networks:
+            return jsonify({'error': 'No networks found. Both monitor and managed scans returned empty.'}), 500
 
         local_tz = get_localzone()
         local_tz = pytz.timezone(str(local_tz))
@@ -2147,16 +2173,59 @@ def scan_debug():
         'oui_map_size': len(OUI_MAP),
     }
 
+    # Check adapter details
+    try:
+        iw_info = subprocess.run(['iw', 'dev'], capture_output=True, text=True, timeout=5)
+        info['iw_dev'] = iw_info.stdout[:2000]
+    except Exception:
+        pass
+
     if mon_adapter:
-        info['scan_method'] = 'monitor (tshark beacon capture)'
+        info['scan_method'] = 'monitor (tcpdump beacon capture)'
         info['adapter'] = mon_adapter
+
+        # Quick test: can we set a channel on this adapter?
         try:
-            networks, _ = scan_with_monitor(mon_adapter, duration=3)
+            ch_test = subprocess.run(
+                ['sudo', 'iw', 'dev', mon_adapter, 'set', 'freq', '2437', 'HT20'],
+                capture_output=True, text=True, timeout=3
+            )
+            info['channel_set_test'] = 'OK' if ch_test.returncode == 0 else f'FAIL: {ch_test.stderr.strip()}'
+        except Exception as e:
+            info['channel_set_test'] = f'ERROR: {e}'
+
+        # Quick test: can tcpdump capture on this adapter?
+        try:
+            tcpdump_test = subprocess.run(
+                ['sudo', 'tcpdump', '-i', mon_adapter, '-c', '1', '-w', '/dev/null', '--immediate-mode'],
+                capture_output=True, text=True, timeout=3
+            )
+            info['tcpdump_test'] = 'OK' if tcpdump_test.returncode == 0 else f'FAIL: {tcpdump_test.stderr.strip()}'
+        except subprocess.TimeoutExpired:
+            info['tcpdump_test'] = 'OK (timed out waiting for packet, but tcpdump started)'
+        except Exception as e:
+            info['tcpdump_test'] = f'ERROR: {e}'
+
+        try:
+            networks, _ = scan_with_monitor(mon_adapter, duration=4)
             info['parsed_count'] = len(networks)
             info['parsed_first'] = networks[0] if networks else None
             info['all_bands'] = sorted(set(n['band'] for n in networks if n.get('band')))
         except Exception as e:
             info['monitor_error'] = str(e)
+            import traceback
+            info['monitor_traceback'] = traceback.format_exc()
+
+        # Also try iw scan as fallback reference
+        try:
+            result = subprocess.run(
+                ['sudo', 'iw', 'dev', 'wlan0', 'scan'],
+                capture_output=True, text=True, timeout=15
+            )
+            iw_nets = parse_iw_scan(result.stdout) if result.returncode == 0 else []
+            info['iw_fallback_count'] = len(iw_nets)
+        except Exception:
+            info['iw_fallback_count'] = 'failed'
     else:
         info['scan_method'] = 'iw dev wlan0 scan (managed mode)'
         try:
