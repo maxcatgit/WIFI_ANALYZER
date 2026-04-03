@@ -89,6 +89,22 @@
         .vuln-summary-low { background: #0dcaf0; color: #333; }
         .vuln-summary-clean { background: #28a745; }
 
+        /* Vendor under BSSID */
+        .bssid-vendor { display: block; font-size: 0.72rem; color: #666; font-weight: normal; }
+        .bssid-vendor.unknown { color: #bbb; font-style: italic; }
+
+        /* Selected row */
+        tr.selected-row { background: #cfe2ff !important; outline: 2px solid #0d6efd; }
+        tr.selected-row:hover { background: #b6d4fe !important; }
+
+        /* Action panel */
+        .action-panel { max-width: 1400px; margin: 0.5rem auto; padding: 0.75rem; background: white; border: 2px solid #0d6efd; border-radius: 0.375rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; font-size: 0.85rem; }
+        .action-panel .net-info { flex: 1; min-width: 200px; }
+        .action-panel .net-info strong { color: #0d6efd; }
+        .action-panel .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+        .btn-capture { background: #198754; color: white; }
+        .btn-capture:hover { background: #157347; }
+
         @media (max-width: 600px) {
             .header { flex-direction: column; align-items: flex-start; }
             .header h1 { font-size: 1.2rem; }
@@ -128,6 +144,21 @@
 
     <div class="vuln-summary" id="vuln-summary" style="display: none;"></div>
 
+    <div class="action-panel" id="action-panel" style="display:none;">
+        <div class="net-info">
+            Selected: <strong id="sel-ssid">-</strong>
+            (<span id="sel-bssid">-</span>)
+            — Ch <span id="sel-channel">-</span> <span id="sel-band">-</span>
+            — <span id="sel-vendor">-</span>
+            — <span id="sel-security">-</span>
+        </div>
+        <div class="actions">
+            <button class="btn btn-capture btn-sm" onclick="captureSelected()">Capture this network</button>
+            <button class="btn btn-secondary btn-sm" onclick="analyseSelected()">Deep analyse (pcap)</button>
+            <button class="btn btn-secondary btn-sm" onclick="clearSelection()">Clear</button>
+        </div>
+    </div>
+
     <div class="card">
         <div class="table-wrap">
             <table id="network-table">
@@ -162,6 +193,7 @@
         let sortAsc = false;
         let autoTimer = null;
         let expandedRows = new Set();
+        let selectedNet = null;
 
         const sevWeight = { critical: 1000, high: 100, medium: 10, low: 1, info: 0 };
 
@@ -343,12 +375,14 @@
                 const hasVulns = (net.vulnerabilities || []).length > 0;
                 const rowId = `net-${idx}`;
                 const isExpanded = expandedRows.has(net.bssid);
-                const clickAttr = hasVulns ? ` onclick="toggleVulnDetail('${net.bssid}', ${idx})" style="cursor:pointer;"` : '';
+                const isSelected = selectedNet && selectedNet.bssid === net.bssid;
+                const selClass = isSelected ? ' selected-row' : '';
+                const vendorCls = net.vendor === 'Unknown' ? ' unknown' : '';
 
-                html += `<tr class="${rowClass}"${clickAttr} id="${rowId}">
+                html += `<tr class="${rowClass}${selClass}" id="${rowId}" onclick="selectNetwork('${net.bssid}', ${idx}, event)" style="cursor:pointer;">
                     <td>${renderVulnBadges(net)}</td>
                     <td${ssidClass}>${escHtml(net.ssid)}</td>
-                    <td>${escHtml(net.bssid)}</td>
+                    <td>${escHtml(net.bssid)}<span class="bssid-vendor${vendorCls}">${escHtml(net.vendor)}</span></td>
                     <td>${escHtml(net.channel)}</td>
                     <td>${escHtml(net.band)}</td>
                     <td><span class="signal-bar ${sigClass}" style="width:${sigWidth}"></span>${net.signal} dBm</td>
@@ -417,6 +451,73 @@
                 if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
             }
         });
+
+        // Network selection
+        function selectNetwork(bssid, idx, event) {
+            // Don't interfere with vulnerability expand if clicking vuln badges
+            if (event && event.target.closest && event.target.closest('.vuln-badge,.vuln-badges')) {
+                toggleVulnDetail(bssid, idx);
+                return;
+            }
+            const net = networkData.find(n => n.bssid === bssid);
+            if (!net) return;
+
+            if (selectedNet && selectedNet.bssid === bssid) {
+                // Toggle: if already selected and has vulns, expand vulns
+                if ((net.vulnerabilities || []).length > 0) {
+                    toggleVulnDetail(bssid, idx);
+                }
+                return;
+            }
+
+            selectedNet = net;
+            document.getElementById('sel-ssid').textContent = net.ssid;
+            document.getElementById('sel-bssid').textContent = net.bssid;
+            document.getElementById('sel-channel').textContent = net.channel;
+            document.getElementById('sel-band').textContent = net.band;
+            document.getElementById('sel-vendor').textContent = net.vendor;
+            document.getElementById('sel-security').textContent = net.security;
+            document.getElementById('action-panel').style.display = 'flex';
+            renderTable();
+        }
+
+        function clearSelection() {
+            selectedNet = null;
+            document.getElementById('action-panel').style.display = 'none';
+            renderTable();
+        }
+
+        function captureSelected() {
+            if (!selectedNet) return;
+            // Build URL params to pre-configure the capture page
+            const params = new URLSearchParams({
+                channel: selectedNet.channel,
+                band: selectedNet.band,
+                bssid: selectedNet.bssid,
+                ssid: selectedNet.ssid,
+            });
+            window.location.href = '/?capture_net=' + encodeURIComponent(JSON.stringify({
+                channel: selectedNet.channel,
+                freq: selectedNet.freq || '',
+                band: selectedNet.band,
+                bssid: selectedNet.bssid,
+                ssid: selectedNet.ssid,
+            }));
+        }
+
+        function analyseSelected() {
+            if (!selectedNet) return;
+            // Go to the pcap analyser page - user can upload a capture of this network
+            alert(
+                'To deep-analyse "' + selectedNet.ssid + '":\n\n' +
+                '1. First capture packets on channel ' + selectedNet.channel + ' (' + selectedNet.band + ')\n' +
+                '2. Download the .pcap file\n' +
+                '3. Upload it in the Pcap Analyser\n' +
+                '4. Select SSID "' + selectedNet.ssid + '" for analysis\n\n' +
+                'Redirecting to Capture page with channel pre-selected...'
+            );
+            captureSelected();
+        }
     </script>
 </body>
 </html>

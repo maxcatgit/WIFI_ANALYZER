@@ -1112,6 +1112,45 @@
                 updateFileSizes();
             }
         }, 5000);
+
+    // Handle capture_net parameter from Network Scanner
+    (function() {
+        const params = new URLSearchParams(window.location.search);
+        const netParam = params.get('capture_net');
+        if (!netParam) return;
+        try {
+            const net = JSON.parse(decodeURIComponent(netParam));
+            // Clear all channel selections first
+            document.querySelectorAll('.form-check-input[id^="ch24-"], .form-check-input[id^="ch5-"], .form-check-input[id^="ch6-"]').forEach(cb => cb.checked = false);
+            // Select the right channel
+            const ch = net.channel;
+            const band = (net.band || '').toLowerCase();
+            let cbId = '';
+            if (band.includes('2.4')) cbId = `ch24-${ch}`;
+            else if (band.includes('6')) cbId = `ch6-${ch}`;
+            else cbId = `ch5-${ch}`;
+            const cb = document.getElementById(cbId);
+            if (cb) {
+                cb.checked = true;
+                cb.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+            // Set filename suffix to SSID
+            const suffixInput = document.getElementById('filename') || document.querySelector('input[name="filename"]');
+            if (suffixInput && net.ssid) {
+                suffixInput.value = net.ssid.replace(/[^a-zA-Z0-9_-]/g, '_');
+            }
+            // Show a notification
+            const header = document.querySelector('.header h1') || document.querySelector('h1');
+            if (header) {
+                const notice = document.createElement('div');
+                notice.style.cssText = 'background:#cfe2ff;border:1px solid #0d6efd;border-radius:0.25rem;padding:0.5rem 1rem;margin-bottom:0.5rem;font-size:0.85rem;';
+                notice.innerHTML = `<strong>Capturing:</strong> ${net.ssid || 'Unknown'} (${net.bssid}) on Ch ${net.channel} ${net.band}. Select an adapter and press Start.`;
+                header.parentElement.insertBefore(notice, header.nextSibling);
+            }
+            // Clean the URL
+            window.history.replaceState({}, '', '/');
+        } catch(e) {}
+    })();
     </script>
 </body>
 </html>
