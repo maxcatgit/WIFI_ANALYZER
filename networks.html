@@ -117,7 +117,8 @@
     <div class="header">
         <h1>Wi-Fi Network Scanner</h1>
         <div class="header-controls">
-            <button class="btn btn-primary" id="scan-btn" onclick="doScan()">Scan now</button>
+            <button class="btn btn-primary" id="scan-btn" onclick="doScan()">Scan (wlan0)</button>
+            <button class="btn btn-primary" id="mon-scan-btn" onclick="doMonitorScan()" style="background:#6610f2;">Scan (monitor)</button>
             <label class="auto-toggle">
                 <input type="checkbox" id="auto-refresh"> Auto-refresh (30s)
             </label>
@@ -204,13 +205,23 @@
         }
 
         function doScan() {
-            const btn = document.getElementById('scan-btn');
+            _runScan('/scan', document.getElementById('scan-btn'), 'Scan (wlan0)');
+        }
+
+        function doMonitorScan() {
+            _runScan('/scan/monitor', document.getElementById('mon-scan-btn'), 'Scan (monitor)');
+        }
+
+        function _runScan(url, btn, btnLabel) {
             const status = document.getElementById('status-bar');
             btn.disabled = true;
             btn.textContent = 'Scanning...';
-            status.innerHTML = '<span class="spinner"></span> Scanning for networks and assessing vulnerabilities...';
+            const isMonitor = url.includes('monitor');
+            status.innerHTML = '<span class="spinner"></span> ' +
+                (isMonitor ? 'Monitor scan: capturing beacons on all bands (2.4/5/6 GHz)...' :
+                 'Scanning for networks via wlan0...');
 
-            fetch('/scan')
+            fetch(url)
                 .then(res => {
                     if (!res.ok) return res.json().then(d => { throw new Error(d.error || 'Scan failed'); });
                     return res.json();
@@ -221,14 +232,14 @@
                     updateSummary(data);
                     updateVulnSummary(data.networks);
                     renderTable();
-                    status.textContent = '';
+                    status.textContent = `${data.count} networks via ${data.adapter || '?'} (${data.scan_method || '?'})`;
                 })
                 .catch(err => {
                     status.textContent = 'Error: ' + err.message;
                 })
                 .finally(() => {
                     btn.disabled = false;
-                    btn.textContent = 'Scan now';
+                    btn.textContent = btnLabel;
                 });
         }
 
@@ -240,7 +251,7 @@
             document.getElementById('count-6').textContent = data.networks.filter(n => n.band === '6 GHz').length;
             document.getElementById('count-open').textContent = data.networks.filter(n => n.security === 'Open').length;
             document.getElementById('scan-time').textContent = data.timestamp;
-                    document.getElementById('scan-adapter').textContent = (data.adapter || 'wlan0') + (data.scan_method === 'monitor' ? ' (monitor)' : ' (managed)');
+            document.getElementById('scan-adapter').textContent = (data.adapter || 'wlan0') + (data.scan_method === 'monitor' ? ' (monitor)' : ' (managed)');
         }
 
         function updateVulnSummary(networks) {

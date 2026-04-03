@@ -2098,40 +2098,18 @@ def networks_page():
 
 @app.route('/scan', methods=['GET'])
 def scan_networks():
+    """Default scan: always uses iw dev wlan0 scan (reliable, fast).
+    Use /scan/monitor for the monitor-mode adapter scan."""
     if not scan_lock.acquire(blocking=False):
         return jsonify({'error': 'Scan already in progress'}), 429
     try:
-        scan_method = 'iw'
-        adapter_used = 'wlan0'
-
-        # Check for monitor-mode adapter
-        networks = []
-        mon_adapter = get_monitor_adapter()
-        if mon_adapter:
-            try:
-                networks, adapter_used = scan_with_monitor(mon_adapter, duration=5)
-                if networks:
-                    scan_method = 'monitor'
-            except Exception:
-                networks = []
-
-        # Fall back to iw scan if monitor scan returned nothing
-        if not networks:
-            try:
-                result = subprocess.run(
-                    ['sudo', 'iw', 'dev', 'wlan0', 'scan'],
-                    capture_output=True, text=True, timeout=15
-                )
-                if result.returncode == 0:
-                    networks = parse_iw_scan(result.stdout)
-                    scan_method = 'iw'
-                    adapter_used = 'wlan0'
-            except Exception:
-                pass
-
-        if not networks:
-            return jsonify({'error': 'No networks found. Both monitor and managed scans returned empty.'}), 500
-
+        result = subprocess.run(
+            ['sudo', 'iw', 'dev', 'wlan0', 'scan'],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0:
+            return jsonify({'error': result.stderr.strip() or 'Scan failed'}), 500
+        networks = parse_iw_scan(result.stdout)
         local_tz = get_localzone()
         local_tz = pytz.timezone(str(local_tz))
         utc_now = datetime.now(pytz.UTC)
@@ -2140,11 +2118,37 @@ def scan_networks():
             'networks': networks,
             'timestamp': local_now.strftime('%Y-%m-%d %H:%M:%S'),
             'count': len(networks),
-            'scan_method': scan_method,
-            'adapter': adapter_used,
+            'scan_method': 'iw',
+            'adapter': 'wlan0',
         })
     except subprocess.TimeoutExpired:
         return jsonify({'error': 'Scan timed out'}), 504
+    finally:
+        scan_lock.release()
+
+@app.route('/scan/monitor', methods=['GET'])
+def scan_networks_monitor():
+    """Scan using the monitor-mode adapter (wlan1mon). Slower but sees all bands."""
+    mon_adapter = get_monitor_adapter()
+    if not mon_adapter:
+        return jsonify({'error': 'No monitor-mode adapter found. Put an adapter in monitor mode first.'}), 400
+    if not scan_lock.acquire(blocking=False):
+        return jsonify({'error': 'Scan already in progress'}), 429
+    try:
+        networks, adapter_used = scan_with_monitor(mon_adapter, duration=5)
+        local_tz = get_localzone()
+        local_tz = pytz.timezone(str(local_tz))
+        utc_now = datetime.now(pytz.UTC)
+        local_now = utc_now.astimezone(local_tz)
+        return jsonify({
+            'networks': networks,
+            'timestamp': local_now.strftime('%Y-%m-%d %H:%M:%S'),
+            'count': len(networks),
+            'scan_method': 'monitor',
+            'adapter': adapter_used,
+        })
+    except Exception as e:
+        return jsonify({'error': f'Monitor scan failed: {str(e)}'}), 500
     finally:
         scan_lock.release()
 
