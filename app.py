@@ -1931,7 +1931,16 @@ def scan_with_monitor(adapter, duration=6):
     pcap_path = f'/tmp/wifi_scan_{uuid.uuid4().hex[:8]}.pcap'
 
     try:
-        # Set to first frequency (known good) before starting capture
+        # Run airmon-ng start to ensure driver is properly configured for monitor mode
+        # (some drivers only pass management frames after airmon-ng configures them)
+        base_iface = adapter.replace('mon', '') if adapter.endswith('mon') else adapter
+        subprocess.run(['sudo', 'airmon-ng', 'start', base_iface],
+                       capture_output=True, text=True, timeout=15)
+        time.sleep(0.5)
+        # Re-detect adapter name (airmon-ng might have changed it)
+        adapter = get_monitor_adapter() or adapter
+
+        # Set to first frequency
         first_freq, first_bw = scan_freqs[0]
         subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(first_freq), first_bw],
                        capture_output=True, text=True, timeout=2)
@@ -2240,10 +2249,26 @@ def scan_debug():
     else:
         steps.append({'step': 'supported_freqs', 'error': 'could not find phy'})
 
-    # Step 2: set channel to first 2.4 GHz channel
+    # Step 2: run airmon-ng start to properly configure monitor mode
+    # (the driver may need this to pass management frames like beacons)
+    base_iface = mon_adapter.replace('mon', '') if mon_adapter.endswith('mon') else mon_adapter
+    try:
+        r = subprocess.run(['sudo', 'airmon-ng', 'start', base_iface],
+                           capture_output=True, text=True, timeout=15)
+        steps.append({'step': 'airmon_start', 'ok': r.returncode == 0,
+                      'stdout': r.stdout[-300:], 'stderr': r.stderr[-300:]})
+    except Exception as e:
+        steps.append({'step': 'airmon_start', 'ok': False, 'error': str(e)})
+
+    # Re-detect adapter name (airmon-ng might have changed it)
+    time.sleep(0.5)
+    mon_adapter = get_monitor_adapter() or mon_adapter
+    steps.append({'step': 'adapter_after_airmon', 'adapter': mon_adapter})
+
+    # Step 3: set channel
     test_freqs = [f for f in [2412, 2437, 2462] if f in supported_freqs]
     if not test_freqs:
-        test_freqs = [2412, 2437, 2462]  # try anyway
+        test_freqs = [2412, 2437, 2462]
     try:
         r = subprocess.run(['sudo', 'iw', 'dev', mon_adapter, 'set', 'freq', str(test_freqs[0]), 'HT20'],
                            capture_output=True, text=True, timeout=3)
