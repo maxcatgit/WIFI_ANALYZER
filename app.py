@@ -4309,13 +4309,12 @@ def api_config_adapters():
 
 @app.route('/api/config/setup_monitor', methods=['POST'])
 def api_config_setup_monitor():
-    """Put an adapter into monitor mode using iw (safe, doesn't kill wpa_supplicant)."""
+    """Put an adapter into monitor mode. Tries multiple methods in order."""
     data = request.get_json()
     interface = data.get('interface', '')
     if not interface or not interface.startswith('wlan') or interface == 'wlan0':
         return jsonify({'error': 'Invalid adapter. Cannot use wlan0.'}), 400
 
-    # Find the phy for this interface
     try:
         interfaces = get_interfaces_info()
         iface_info = next((i for i in interfaces if i['interface'] == interface), None)
@@ -4327,37 +4326,90 @@ def api_config_setup_monitor():
 
     mon_name = interface + 'mon' if not interface.endswith('mon') else interface
 
-    try:
-        # Check if monitor interface already exists
-        existing_mon = next((i for i in interfaces if i['interface'] == mon_name), None)
-        if existing_mon and existing_mon['type'] == 'monitor':
-            return jsonify({'ok': True, 'interface': mon_name, 'message': f'{mon_name} already in monitor mode'})
+    # Check if already in monitor mode
+    existing_mon = next((i for i in interfaces if i['interface'] == mon_name and i['type'] == 'monitor'), None)
+    if existing_mon:
+        return jsonify({'ok': True, 'interface': mon_name, 'message': f'{mon_name} already in monitor mode'})
 
-        # Create monitor interface using iw (safe - doesn't touch wpa_supplicant/wlan0)
-        # Method: add a new monitor interface on the same phy
+    # Also check if the interface itself is already monitor
+    if iface_info['type'] == 'monitor':
+        return jsonify({'ok': True, 'interface': interface, 'message': f'{interface} already in monitor mode'})
+
+    errors = []
+
+    # Method 1: Convert existing interface (down -> set type monitor -> rename -> up)
+    # Most drivers require this because they can't have managed + monitor on same phy
+    try:
+        subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'down'],
+                       capture_output=True, text=True, check=True, timeout=5)
+        subprocess.run(['sudo', 'iw', 'dev', interface, 'set', 'type', 'monitor'],
+                       capture_output=True, text=True, check=True, timeout=5)
+        subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'name', mon_name],
+                       capture_output=True, text=True, check=True, timeout=5)
+        subprocess.run(['sudo', 'ip', 'link', 'set', mon_name, 'up'],
+                       capture_output=True, text=True, check=True, timeout=5)
+        return jsonify({'ok': True, 'interface': mon_name, 'method': 'convert',
+                       'message': f'{interface} converted to {mon_name} (monitor mode)'})
+    except subprocess.CalledProcessError as e:
+        errors.append(f'Convert failed: {e.stderr.strip()}')
+        # Try to bring it back up in case it's stuck down
+        subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'up'],
+                       capture_output=True, text=True, timeout=3)
+
+    # Method 2: Delete managed interface, create monitor interface on same phy
+    try:
+        subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'down'],
+                       capture_output=True, text=True, timeout=5)
+        subprocess.run(['sudo', 'iw', 'dev', interface, 'del'],
+                       capture_output=True, text=True, check=True, timeout=5)
         subprocess.run(['sudo', 'iw', 'phy', phy, 'interface', 'add', mon_name, 'type', 'monitor'],
                        capture_output=True, text=True, check=True, timeout=5)
         subprocess.run(['sudo', 'ip', 'link', 'set', mon_name, 'up'],
                        capture_output=True, text=True, check=True, timeout=5)
-
-        return jsonify({'ok': True, 'interface': mon_name, 'message': f'{mon_name} created and active'})
+        return jsonify({'ok': True, 'interface': mon_name, 'method': 'delete+create',
+                       'message': f'{interface} replaced with {mon_name} (monitor mode)'})
     except subprocess.CalledProcessError as e:
-        return jsonify({'error': f'Failed: {e.stderr.strip()}'}), 500
+        errors.append(f'Delete+create failed: {e.stderr.strip()}')
+
+    # Method 3: airmon-ng (last resort, already proven to work in existing code)
+    try:
+        subprocess.run(['sudo', 'airmon-ng', 'start', interface],
+                       capture_output=True, text=True, check=True, timeout=15)
+        return jsonify({'ok': True, 'interface': mon_name, 'method': 'airmon-ng',
+                       'message': f'airmon-ng enabled monitor on {interface}'})
+    except subprocess.CalledProcessError as e:
+        errors.append(f'airmon-ng failed: {e.stderr.strip()}')
+    except FileNotFoundError:
+        errors.append('airmon-ng not installed')
+
+    return jsonify({'error': 'All methods failed', 'details': errors}), 500
 
 @app.route('/api/config/disable_monitor', methods=['POST'])
 def api_config_disable_monitor():
-    """Remove a monitor-mode interface."""
+    """Revert a monitor-mode interface back to managed mode."""
     data = request.get_json()
     interface = data.get('interface', '')
     if not interface or interface == 'wlan0':
         return jsonify({'error': 'Invalid adapter'}), 400
 
+    # If it's wlanXmon, revert to wlanX managed
+    managed_name = interface.replace('mon', '') if interface.endswith('mon') else interface
+
     try:
+        # Down -> set type managed -> rename back -> up
         subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'down'],
                        capture_output=True, text=True, timeout=5)
-        subprocess.run(['sudo', 'iw', 'dev', interface, 'del'],
+        subprocess.run(['sudo', 'iw', 'dev', interface, 'set', 'type', 'managed'],
                        capture_output=True, text=True, timeout=5)
-        return jsonify({'ok': True, 'message': f'{interface} removed'})
+        if interface != managed_name:
+            subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'name', managed_name],
+                           capture_output=True, text=True, timeout=5)
+            subprocess.run(['sudo', 'ip', 'link', 'set', managed_name, 'up'],
+                           capture_output=True, text=True, timeout=5)
+        else:
+            subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'up'],
+                           capture_output=True, text=True, timeout=5)
+        return jsonify({'ok': True, 'message': f'{interface} reverted to {managed_name} (managed mode)'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -4424,13 +4476,18 @@ def api_config_auto_setup():
             if adapter['interface'] in [r['interface'] for r in results]:
                 continue  # Already assigned
             if target_band in adapter['bands'] and target_band not in band_assigned:
-                mon_name = adapter['interface'] + 'mon'
+                iface_name = adapter['interface']
+                mon_name = iface_name + 'mon'
                 try:
-                    # Check if already exists
+                    # Check if already in monitor mode
                     existing = next((i for i in interfaces if i['interface'] == mon_name and i['type'] == 'monitor'), None)
                     if not existing:
-                        subprocess.run(['sudo', 'iw', 'phy', adapter['phy_name'], 'interface', 'add',
-                                       mon_name, 'type', 'monitor'],
+                        # Convert: down -> set type monitor -> rename -> up
+                        subprocess.run(['sudo', 'ip', 'link', 'set', iface_name, 'down'],
+                                       capture_output=True, text=True, timeout=5)
+                        subprocess.run(['sudo', 'iw', 'dev', iface_name, 'set', 'type', 'monitor'],
+                                       capture_output=True, text=True, check=True, timeout=5)
+                        subprocess.run(['sudo', 'ip', 'link', 'set', iface_name, 'name', mon_name],
                                        capture_output=True, text=True, check=True, timeout=5)
                         subprocess.run(['sudo', 'ip', 'link', 'set', mon_name, 'up'],
                                        capture_output=True, text=True, check=True, timeout=5)
