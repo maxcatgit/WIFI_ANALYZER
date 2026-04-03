@@ -2206,100 +2206,86 @@ def scan_networks_monitor():
 
 @app.route('/scan/debug', methods=['GET'])
 def scan_debug():
-    """Debug endpoint: shows which adapter is used and raw scan data."""
+    """Step-by-step debug: tests each part of the monitor scan individually."""
     mon_adapter = get_monitor_adapter()
-    info = {
-        'monitor_adapter': mon_adapter,
-        'oui_map_size': len(OUI_MAP),
-    }
+    steps = []
+    pcap_path = f'/tmp/wifi_debug_{uuid.uuid4().hex[:8]}.pcap'
 
-    # Check adapter details
+    steps.append({'step': 'detect_adapter', 'adapter': mon_adapter})
+
+    if not mon_adapter:
+        steps.append({'step': 'no_monitor', 'msg': 'No monitor adapter found'})
+        return jsonify({'steps': steps})
+
+    # Step 1: set channel
     try:
-        iw_info = subprocess.run(['iw', 'dev'], capture_output=True, text=True, timeout=5)
-        info['iw_dev'] = iw_info.stdout[:2000]
+        r = subprocess.run(['sudo', 'iw', 'dev', mon_adapter, 'set', 'freq', '2437', 'HT20'],
+                           capture_output=True, text=True, timeout=3)
+        steps.append({'step': 'set_channel', 'ok': r.returncode == 0, 'stderr': r.stderr.strip()})
+    except Exception as e:
+        steps.append({'step': 'set_channel', 'ok': False, 'error': str(e)})
+
+    # Step 2: run dumpcap for 3 seconds (BLOCKING, no background, no shell)
+    try:
+        r = subprocess.run(['dumpcap', '-i', mon_adapter, '-w', pcap_path, '-a', 'duration:3', '-q'],
+                           capture_output=True, text=True, timeout=10)
+        steps.append({'step': 'dumpcap', 'ok': r.returncode == 0,
+                      'stdout': r.stdout[:500], 'stderr': r.stderr[:500]})
+    except Exception as e:
+        steps.append({'step': 'dumpcap', 'ok': False, 'error': str(e)})
+
+    # Step 3: check file
+    try:
+        size = os.path.getsize(pcap_path)
+        steps.append({'step': 'pcap_file', 'exists': True, 'size_bytes': size})
+    except OSError:
+        steps.append({'step': 'pcap_file', 'exists': False})
+        return jsonify({'steps': steps})
+
+    # Step 4: tshark - show ALL frame types in the pcap
+    try:
+        r = subprocess.run(['tshark', '-r', pcap_path, '-T', 'fields', '-e', 'wlan.fc.type_subtype'],
+                           capture_output=True, text=True, timeout=10)
+        frame_types = {}
+        for line in r.stdout.strip().split('\n'):
+            t = line.strip()
+            if t:
+                frame_types[t] = frame_types.get(t, 0) + 1
+        steps.append({'step': 'frame_types', 'types': frame_types, 'total_frames': sum(frame_types.values())})
+    except Exception as e:
+        steps.append({'step': 'frame_types', 'error': str(e)})
+
+    # Step 5: tshark - extract beacons specifically
+    try:
+        r = subprocess.run(['tshark', '-r', pcap_path,
+                           '-Y', 'wlan.fc.type_subtype == 0x0008',
+                           '-T', 'fields', '-e', 'wlan.bssid', '-e', 'wlan.ssid'],
+                           capture_output=True, text=True, timeout=10)
+        beacon_lines = [l for l in r.stdout.strip().split('\n') if l.strip()]
+        steps.append({'step': 'beacons', 'count': len(beacon_lines),
+                      'first_5': beacon_lines[:5], 'stderr': r.stderr[:300]})
+    except Exception as e:
+        steps.append({'step': 'beacons', 'error': str(e)})
+
+    # Step 6: tshark - extract probe responses
+    try:
+        r = subprocess.run(['tshark', '-r', pcap_path,
+                           '-Y', 'wlan.fc.type_subtype == 0x0005',
+                           '-T', 'fields', '-e', 'wlan.bssid', '-e', 'wlan.ssid'],
+                           capture_output=True, text=True, timeout=10)
+        probe_lines = [l for l in r.stdout.strip().split('\n') if l.strip()]
+        steps.append({'step': 'probe_responses', 'count': len(probe_lines),
+                      'first_5': probe_lines[:5]})
+    except Exception as e:
+        steps.append({'step': 'probe_responses', 'error': str(e)})
+
+    # Cleanup
+    try:
+        os.unlink(pcap_path)
     except Exception:
         pass
 
-    if mon_adapter:
-        info['scan_method'] = 'monitor (tcpdump beacon capture)'
-        info['adapter'] = mon_adapter
-
-        # Quick test: can we set a channel on this adapter?
-        try:
-            ch_test = subprocess.run(
-                ['sudo', 'iw', 'dev', mon_adapter, 'set', 'freq', '2437', 'HT20'],
-                capture_output=True, text=True, timeout=3
-            )
-            info['channel_set_test'] = 'OK' if ch_test.returncode == 0 else f'FAIL: {ch_test.stderr.strip()}'
-        except Exception as e:
-            info['channel_set_test'] = f'ERROR: {e}'
-
-        # Quick test: can tcpdump capture on this adapter?
-        try:
-            tcpdump_test = subprocess.run(
-                ['sudo', 'tcpdump', '-i', mon_adapter, '-c', '1', '-w', '/dev/null', '--immediate-mode'],
-                capture_output=True, text=True, timeout=3
-            )
-            info['tcpdump_test'] = 'OK' if tcpdump_test.returncode == 0 else f'FAIL: {tcpdump_test.stderr.strip()}'
-        except subprocess.TimeoutExpired:
-            info['tcpdump_test'] = 'OK (timed out waiting for packet, but tcpdump started)'
-        except Exception as e:
-            info['tcpdump_test'] = f'ERROR: {e}'
-
-        try:
-            networks, _ = scan_with_monitor(mon_adapter, duration=4)
-            info['parsed_count'] = len(networks)
-            info['parsed_first'] = networks[0] if networks else None
-            info['all_bands'] = sorted(set(n['band'] for n in networks if n.get('band')))
-        except Exception as e:
-            info['monitor_error'] = str(e)
-            import traceback
-            info['monitor_traceback'] = traceback.format_exc()
-
-        # Also try iw scan as fallback reference
-        try:
-            result = subprocess.run(
-                ['sudo', 'iw', 'dev', 'wlan0', 'scan'],
-                capture_output=True, text=True, timeout=15
-            )
-            if result.returncode == 0:
-                iw_nets = parse_iw_scan(result.stdout)
-                info['iw_fallback_count'] = len(iw_nets)
-            else:
-                info['iw_fallback_count'] = 0
-                info['iw_fallback_error'] = result.stderr.strip()
-        except subprocess.TimeoutExpired:
-            info['iw_fallback_count'] = 0
-            info['iw_fallback_error'] = 'scan timed out (wlan0 may be down)'
-        except Exception as e:
-            info['iw_fallback_count'] = 0
-            info['iw_fallback_error'] = str(e)
-    else:
-        info['scan_method'] = 'iw dev wlan0 scan (managed mode)'
-        try:
-            result = subprocess.run(
-                ['sudo', 'iw', 'dev', 'wlan0', 'scan'],
-                capture_output=True, text=True, timeout=15
-            )
-            raw = result.stdout
-            networks = parse_iw_scan(raw) if result.returncode == 0 else []
-            first_bss = ''
-            bss_count = 0
-            for line in raw.split('\n'):
-                if line.startswith('BSS '):
-                    bss_count += 1
-                    if bss_count > 1: break
-                if bss_count == 1:
-                    first_bss += line + '\n'
-            info['raw_first_bss'] = first_bss
-            info['parsed_count'] = len(networks)
-            info['parsed_first'] = networks[0] if networks else None
-            info['stderr'] = result.stderr
-            info['returncode'] = result.returncode
-        except Exception as e:
-            info['error'] = str(e)
-
-    return jsonify(info)
+    return jsonify({'steps': steps})
 
 # --- Pcap Analyzer ---
 
