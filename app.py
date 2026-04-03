@@ -892,6 +892,15 @@ def _load_oui_file():
                         vendor = m.group(2).strip()
                         loaded[prefix] = vendor
                         continue
+                    # IEEE oui.txt alternate format: "XXXXXX     (base 16)		Vendor Name"
+                    m = re.match(r'^([0-9A-Fa-f]{6})\s+\(base 16\)\s+(.+)$', line)
+                    if m:
+                        raw = m.group(1).upper()
+                        prefix = f"{raw[0:2]}:{raw[2:4]}:{raw[4:6]}"
+                        vendor = m.group(2).strip()
+                        if prefix not in loaded:  # (hex) line takes precedence
+                            loaded[prefix] = vendor
+                        continue
                     # Wireshark manuf format: "XX:XX:XX	VendorShort	Vendor Long Name"
                     m = re.match(r'^([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})\s+(\S+)\s*(.*)?$', line)
                     if m:
@@ -908,6 +917,12 @@ def _load_oui_file():
                         loaded[prefix] = vendor
                         continue
             if loaded:
+                # Clean up any vendor names with "(base 16)" or "(hex)" artifacts
+                for k in loaded:
+                    v = loaded[k]
+                    v = re.sub(r'\s*\(base 16\)\s*', '', v)
+                    v = re.sub(r'\s*\(hex\)\s*', '', v)
+                    loaded[k] = v.strip()
                 return loaded
         except Exception:
             continue
