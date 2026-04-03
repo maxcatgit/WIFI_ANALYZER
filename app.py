@@ -4223,6 +4223,258 @@ h2 {{ color: #0d6efd; margin-top: 2rem; border-bottom: 1px solid #dee2e6; paddin
 
     return html, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
+# --- Adapter Config Page ---
+
+@app.route('/config')
+def config_page():
+    return app.send_static_file('config.html')
+
+def _get_phy_bands(phy_name):
+    """Get supported bands and frequencies for a phy."""
+    bands = {}
+    try:
+        result = subprocess.run(['iw', 'phy', phy_name, 'info'],
+                                capture_output=True, text=True, timeout=5)
+        current_band = None
+        for line in result.stdout.splitlines():
+            m = re.match(r'\s+Band (\d+):', line)
+            if m:
+                band_num = int(m.group(1))
+                if band_num == 1: current_band = '2.4 GHz'
+                elif band_num == 2: current_band = '5 GHz'
+                elif band_num == 4: current_band = '6 GHz'
+                else: current_band = None
+                if current_band:
+                    bands[current_band] = []
+                continue
+            if current_band:
+                m_freq = re.match(r'\s+\* (\d+) MHz \[(\d+)\](.*)$', line)
+                if m_freq:
+                    freq = int(m_freq.group(1))
+                    ch = m_freq.group(2)
+                    flags = m_freq.group(3).strip()
+                    disabled = 'disabled' in flags
+                    if not disabled:
+                        bands[current_band].append({'freq': freq, 'channel': ch})
+        # Check if monitor mode is supported
+        supports_monitor = 'monitor' in result.stdout.lower().split('supported interface modes')[1] if 'Supported interface modes' in result.stdout else False
+    except Exception:
+        supports_monitor = False
+    return bands, supports_monitor
+
+@app.route('/api/config/adapters', methods=['GET'])
+def api_config_adapters():
+    """Detect all adapters, their phy, bands, mode, and monitor capability."""
+    try:
+        interfaces = get_interfaces_info()
+    except Exception:
+        return jsonify({'error': 'Cannot read interface info'}), 500
+
+    adapters = []
+    seen_phys = set()
+    for iface in interfaces:
+        phy = iface['phy']
+        name = iface['interface']
+        mode = iface['type']
+
+        # Skip non-wlan interfaces
+        if not name.startswith('wlan'):
+            continue
+
+        is_builtin = (phy == 'phy#0' or name == 'wlan0')
+        phy_name = phy.replace('#', '')  # phy#1 -> phy1
+
+        # Get band info (only once per phy)
+        if phy not in seen_phys:
+            bands, supports_monitor = _get_phy_bands(phy_name)
+            seen_phys.add(phy)
+        else:
+            bands, supports_monitor = {}, True
+
+        band_list = sorted(bands.keys())
+
+        adapters.append({
+            'interface': name,
+            'phy': phy,
+            'mode': mode,
+            'is_builtin': is_builtin,
+            'is_monitor': mode == 'monitor',
+            'bands': band_list,
+            'band_channels': bands,
+            'supports_monitor': supports_monitor,
+            'vendor': OUI_MAP.get(name[:8], ''),  # doesn't apply to interface names
+        })
+
+    return jsonify({'adapters': adapters})
+
+@app.route('/api/config/setup_monitor', methods=['POST'])
+def api_config_setup_monitor():
+    """Put an adapter into monitor mode using iw (safe, doesn't kill wpa_supplicant)."""
+    data = request.get_json()
+    interface = data.get('interface', '')
+    if not interface or not interface.startswith('wlan') or interface == 'wlan0':
+        return jsonify({'error': 'Invalid adapter. Cannot use wlan0.'}), 400
+
+    # Find the phy for this interface
+    try:
+        interfaces = get_interfaces_info()
+        iface_info = next((i for i in interfaces if i['interface'] == interface), None)
+        if not iface_info:
+            return jsonify({'error': f'Interface {interface} not found'}), 404
+        phy = iface_info['phy'].replace('#', '')  # phy#1 -> phy1
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    mon_name = interface + 'mon' if not interface.endswith('mon') else interface
+
+    try:
+        # Check if monitor interface already exists
+        existing_mon = next((i for i in interfaces if i['interface'] == mon_name), None)
+        if existing_mon and existing_mon['type'] == 'monitor':
+            return jsonify({'ok': True, 'interface': mon_name, 'message': f'{mon_name} already in monitor mode'})
+
+        # Create monitor interface using iw (safe - doesn't touch wpa_supplicant/wlan0)
+        # Method: add a new monitor interface on the same phy
+        subprocess.run(['sudo', 'iw', 'phy', phy, 'interface', 'add', mon_name, 'type', 'monitor'],
+                       capture_output=True, text=True, check=True, timeout=5)
+        subprocess.run(['sudo', 'ip', 'link', 'set', mon_name, 'up'],
+                       capture_output=True, text=True, check=True, timeout=5)
+
+        return jsonify({'ok': True, 'interface': mon_name, 'message': f'{mon_name} created and active'})
+    except subprocess.CalledProcessError as e:
+        return jsonify({'error': f'Failed: {e.stderr.strip()}'}), 500
+
+@app.route('/api/config/disable_monitor', methods=['POST'])
+def api_config_disable_monitor():
+    """Remove a monitor-mode interface."""
+    data = request.get_json()
+    interface = data.get('interface', '')
+    if not interface or interface == 'wlan0':
+        return jsonify({'error': 'Invalid adapter'}), 400
+
+    try:
+        subprocess.run(['sudo', 'ip', 'link', 'set', interface, 'down'],
+                       capture_output=True, text=True, timeout=5)
+        subprocess.run(['sudo', 'iw', 'dev', interface, 'del'],
+                       capture_output=True, text=True, timeout=5)
+        return jsonify({'ok': True, 'message': f'{interface} removed'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/config/set_channel', methods=['POST'])
+def api_config_set_channel():
+    """Set a monitor adapter to a specific channel/frequency."""
+    data = request.get_json()
+    interface = data.get('interface', '')
+    freq = data.get('freq', '')
+    bandwidth = data.get('bandwidth', 'HT20')
+    if not interface or not freq:
+        return jsonify({'error': 'Missing interface or freq'}), 400
+    try:
+        cmd = ['sudo', 'iw', 'dev', interface, 'set', 'freq', str(freq), bandwidth]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            # Retry without bandwidth
+            cmd2 = ['sudo', 'iw', 'dev', interface, 'set', 'freq', str(freq)]
+            result = subprocess.run(cmd2, capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            return jsonify({'error': result.stderr.strip()}), 500
+        return jsonify({'ok': True, 'message': f'{interface} set to {freq} MHz'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/config/auto_setup', methods=['POST'])
+def api_config_auto_setup():
+    """Auto-detect USB adapters and assign bands. Keeps wlan0 untouched."""
+    try:
+        interfaces = get_interfaces_info()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    # Find all USB adapters (not phy#0/wlan0)
+    usb_adapters = []
+    for iface in interfaces:
+        if iface['phy'] == 'phy#0' or iface['interface'] == 'wlan0':
+            continue
+        if not iface['interface'].startswith('wlan'):
+            continue
+        if iface['interface'].endswith('mon'):
+            continue  # Skip existing monitor interfaces
+        phy_name = iface['phy'].replace('#', '')
+        bands, supports_monitor = _get_phy_bands(phy_name)
+        if supports_monitor:
+            usb_adapters.append({
+                'interface': iface['interface'],
+                'phy': iface['phy'],
+                'phy_name': phy_name,
+                'mode': iface['type'],
+                'bands': bands,
+            })
+
+    if not usb_adapters:
+        return jsonify({'error': 'No USB Wi-Fi adapters found'}), 400
+
+    results = []
+    band_assigned = set()
+
+    # Strategy: assign one adapter per band if possible
+    # Priority: 6 GHz first (rarest), then 5 GHz, then 2.4 GHz
+    for target_band in ['6 GHz', '5 GHz', '2.4 GHz']:
+        for adapter in usb_adapters:
+            if adapter['interface'] in [r['interface'] for r in results]:
+                continue  # Already assigned
+            if target_band in adapter['bands'] and target_band not in band_assigned:
+                mon_name = adapter['interface'] + 'mon'
+                try:
+                    # Check if already exists
+                    existing = next((i for i in interfaces if i['interface'] == mon_name and i['type'] == 'monitor'), None)
+                    if not existing:
+                        subprocess.run(['sudo', 'iw', 'phy', adapter['phy_name'], 'interface', 'add',
+                                       mon_name, 'type', 'monitor'],
+                                       capture_output=True, text=True, check=True, timeout=5)
+                        subprocess.run(['sudo', 'ip', 'link', 'set', mon_name, 'up'],
+                                       capture_output=True, text=True, check=True, timeout=5)
+
+                    # Set to first channel of the assigned band
+                    channels = adapter['bands'].get(target_band, [])
+                    if channels:
+                        freq = channels[0]['freq']
+                        bw_info = FREQ_TO_CHANNEL.get(freq, {})
+                        bw = bw_info.get('bandwidth', 'HT20')
+                        subprocess.run(['sudo', 'iw', 'dev', mon_name, 'set', 'freq', str(freq), bw],
+                                       capture_output=True, text=True, timeout=3)
+
+                    band_assigned.add(target_band)
+                    results.append({
+                        'interface': mon_name,
+                        'phy': adapter['phy'],
+                        'assigned_band': target_band,
+                        'status': 'ok',
+                    })
+                except Exception as e:
+                    results.append({
+                        'interface': adapter['interface'],
+                        'assigned_band': target_band,
+                        'status': 'error',
+                        'error': str(e),
+                    })
+
+    # If only 1 adapter and it supports multiple bands, note it will channel-hop
+    if len(usb_adapters) == 1 and len(results) <= 1:
+        adapter = usb_adapters[0]
+        all_bands = list(adapter['bands'].keys())
+        if len(results) == 1:
+            results[0]['note'] = f'Single adapter covers {", ".join(all_bands)} via channel hopping'
+            results[0]['all_bands'] = all_bands
+
+    return jsonify({
+        'ok': True,
+        'adapters_found': len(usb_adapters),
+        'assignments': results,
+        'bands_covered': sorted(band_assigned),
+        'wlan0': 'untouched (managed mode for connectivity)',
+    })
+
 # Channel analysis page
 @app.route('/channels')
 def channels_page():
