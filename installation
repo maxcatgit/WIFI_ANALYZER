@@ -1,12 +1,16 @@
 This is for Raspberry Pi installation.
-
-sudo apt install aircrack-ng tcpdump tshark screen
+sudo apt update
+sudo apt install aircrack-ng tcpdump tshark screen wireshark
 
 sudo chmod 755 /usr/bin/dumpcap
 
 sudo setcap cap_net_admin,cap_net_raw+eip /usr/bin/dumpcap
 
 sudo setcap cap_net_admin,cap_net_raw+eip /usr/bin/tcpdump
+
+# NOTE: apt upgrades can reset dumpcap capabilities.
+# If capture stops working after an update, re-run:
+#   sudo setcap cap_net_admin,cap_net_raw+eip $(which dumpcap)
 
 
 sudo mkdir /opt/capture
@@ -26,8 +30,18 @@ pip install flask tzlocal pytz gunicorn
 # copy files into:
 
 /opt/capture/app.py
+/opt/capture/ap_models.py
+/opt/capture/capacity_planner.py
 
 /opt/capture/static/index.html
+/opt/capture/static/networks.html
+/opt/capture/static/channels.html
+/opt/capture/static/analyzer.html
+/opt/capture/static/survey.html
+/opt/capture/static/capacity.html
+/opt/capture/static/ap_models.html
+/opt/capture/static/config.html
+/opt/capture/static/files.html
 
 
 # create file /etc/systemd/system/capture.service
@@ -53,5 +67,4 @@ TimeoutStopSec=30
 WantedBy=multi-user.target
 
 sudo systemctl enable capture.service
-
 
