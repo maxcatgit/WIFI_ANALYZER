@@ -2265,32 +2265,43 @@ def scan_debug():
     mon_adapter = get_monitor_adapter() or mon_adapter
     steps.append({'step': 'adapter_after_airmon', 'adapter': mon_adapter})
 
-    # Step 3: set channel
-    test_freqs = [f for f in [2412, 2437, 2462] if f in supported_freqs]
-    if not test_freqs:
-        test_freqs = [2412, 2437, 2462]
+    # Step 3: pick a channel where wlan0 sees networks (if possible)
+    best_freq = 2412  # default channel 1
+    best_bw = 'HT20'
     try:
-        r = subprocess.run(['sudo', 'iw', 'dev', mon_adapter, 'set', 'freq', str(test_freqs[0]), 'HT20'],
+        iw_result = subprocess.run(['sudo', 'iw', 'dev', 'wlan0', 'scan'],
+                                    capture_output=True, text=True, timeout=15)
+        if iw_result.returncode == 0:
+            # Find most common frequency in wlan0 scan
+            freq_counts = {}
+            for line in iw_result.stdout.splitlines():
+                m = re.search(r'freq: (\d+)', line.strip())
+                if m:
+                    f = int(m.group(1))
+                    freq_counts[f] = freq_counts.get(f, 0) + 1
+            if freq_counts:
+                best_freq = max(freq_counts, key=freq_counts.get)
+                best_bw = '80MHz' if best_freq >= 5000 else 'HT20'
+                steps.append({'step': 'wlan0_scan', 'best_freq': best_freq,
+                              'freq_counts': freq_counts,
+                              'msg': f'wlan0 sees most APs on {best_freq} MHz'})
+    except Exception:
+        pass
+
+    # Step 4: set channel and capture 8 sec on ONE channel (no hopping)
+    try:
+        r = subprocess.run(['sudo', 'iw', 'dev', mon_adapter, 'set', 'freq', str(best_freq), best_bw],
                            capture_output=True, text=True, timeout=3)
-        steps.append({'step': 'set_channel', 'freq': test_freqs[0], 'ok': r.returncode == 0, 'stderr': r.stderr.strip()})
+        steps.append({'step': 'set_channel', 'freq': best_freq, 'bw': best_bw,
+                      'ok': r.returncode == 0, 'stderr': r.stderr.strip()})
     except Exception as e:
         steps.append({'step': 'set_channel', 'ok': False, 'error': str(e)})
 
-    # Step 3: capture for 5 sec while hopping channels 1, 6, 11
     try:
-        shell_cmd = f'dumpcap -i {mon_adapter} -w {pcap_path} -a duration:5 -q </dev/null >/dev/null 2>&1 &'
-        subprocess.run(shell_cmd, shell=True, timeout=3)
-        time.sleep(0.3)
-
-        hop_results = []
-        for freq in test_freqs:
-            r = subprocess.run(['sudo', 'iw', 'dev', mon_adapter, 'set', 'freq', str(freq), 'HT20'],
-                               capture_output=True, text=True, timeout=2)
-            hop_results.append({'freq': freq, 'ok': r.returncode == 0})
-            time.sleep(1.5)  # 1.5 sec per channel = enough for beacons
-
-        time.sleep(2)  # wait for dumpcap to finish
-        steps.append({'step': 'dumpcap_with_hopping', 'ok': True, 'channels_hopped': hop_results})
+        shell_cmd = f'dumpcap -i {mon_adapter} -w {pcap_path} -a duration:8 -q </dev/null >/dev/null 2>&1'
+        subprocess.run(shell_cmd, shell=True, timeout=15)
+        time.sleep(0.5)
+        steps.append({'step': 'dumpcap_single_channel', 'duration': 8, 'freq': best_freq})
     except Exception as e:
         steps.append({'step': 'dumpcap', 'ok': False, 'error': str(e)})
 
