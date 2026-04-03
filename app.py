@@ -1887,270 +1887,41 @@ def get_monitor_adapter():
 
 def scan_with_monitor(adapter, duration=6):
     """
-    Scan using monitor adapter. Queries adapter's real supported frequencies,
-    hops only through those, captures with dumpcap, parses with tshark.
+    Scan using USB adapter: temporarily switch to managed mode, run iw scan
+    (which sees all bands: 2.4 + 5 + 6 GHz), then switch back to monitor.
+    The driver doesn't pass beacons in monitor mode, so we use managed mode
+    for scanning — same as how professional tools handle this.
     """
-    # Find the phy for this adapter
-    phy_name = None
-    try:
-        interfaces = get_interfaces_info()
-        for iface in interfaces:
-            if iface['interface'] == adapter:
-                phy_name = iface['phy'].replace('#', '')
-                break
-    except Exception:
-        pass
-
-    # Get the adapter's actual supported frequencies (only non-disabled ones)
-    scan_freqs = []
-    if phy_name:
-        bands, _ = _get_phy_bands(phy_name)
-        # Pick representative channels: for 2.4 GHz use 1,6,11; for 5/6 GHz one per 80 MHz group
-        for band_name, channels in bands.items():
-            freqs = [ch['freq'] for ch in channels]
-            if '2.4' in band_name:
-                # Channels 1, 6, 11 (2412, 2437, 2462)
-                for target in [2412, 2437, 2462]:
-                    if target in freqs:
-                        scan_freqs.append((target, 'HT20'))
-            else:
-                # One frequency per 80 MHz group
-                seen_groups = set()
-                for f in sorted(freqs):
-                    group = f // 80  # rough 80 MHz grouping
-                    if group not in seen_groups:
-                        seen_groups.add(group)
-                        bw = '80MHz' if f >= 5000 else 'HT20'
-                        scan_freqs.append((f, bw))
-
-    # Fallback if we couldn't detect frequencies
-    if not scan_freqs:
-        scan_freqs = [(2412, 'HT20'), (2437, 'HT20'), (2462, 'HT20')]
-
-    dwell_ms = max(400, int((duration * 1000) / len(scan_freqs)))
-    pcap_path = f'/tmp/wifi_scan_{uuid.uuid4().hex[:8]}.pcap'
+    base_iface = adapter.replace('mon', '') if adapter.endswith('mon') else adapter
 
     try:
-        # Run airmon-ng start to ensure driver is properly configured for monitor mode
-        # (some drivers only pass management frames after airmon-ng configures them)
-        base_iface = adapter.replace('mon', '') if adapter.endswith('mon') else adapter
+        # Stop monitor mode -> reverts to managed mode (e.g. wlan1)
+        subprocess.run(['sudo', 'airmon-ng', 'stop', adapter],
+                       capture_output=True, text=True, timeout=15)
+        time.sleep(1)
+
+        # Bring the managed interface up
+        subprocess.run(['sudo', 'ip', 'link', 'set', base_iface, 'up'],
+                       capture_output=True, text=True, timeout=5)
+        time.sleep(0.5)
+
+        # Run iw scan on the USB adapter in managed mode — sees all its bands
+        result = subprocess.run(
+            ['sudo', 'iw', 'dev', base_iface, 'scan'],
+            capture_output=True, text=True, timeout=30
+        )
+
+        networks = []
+        if result.returncode == 0 and result.stdout.strip():
+            networks = parse_iw_scan(result.stdout)
+
+        return networks, base_iface
+
+    finally:
+        # Always put back in monitor mode
         subprocess.run(['sudo', 'airmon-ng', 'start', base_iface],
                        capture_output=True, text=True, timeout=15)
         time.sleep(0.5)
-        # Re-detect adapter name (airmon-ng might have changed it)
-        adapter = get_monitor_adapter() or adapter
-
-        # Set to first frequency
-        first_freq, first_bw = scan_freqs[0]
-        subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(first_freq), first_bw],
-                       capture_output=True, text=True, timeout=2)
-        time.sleep(0.1)
-
-        # Start dumpcap in background - ALL I/O to /dev/null (pipes cause 100% packet drop)
-        shell_cmd = f'timeout {duration} dumpcap -i {adapter} -w {pcap_path} -a duration:{duration} -q </dev/null >/dev/null 2>&1 &'
-        subprocess.run(shell_cmd, shell=True, timeout=3)
-        time.sleep(0.5)
-
-        # Hop through supported channels while dumpcap captures
-        for freq, bw in scan_freqs:
-            try:
-                subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'freq', str(freq), bw],
-                               capture_output=True, text=True, timeout=2)
-            except Exception:
-                pass
-            time.sleep(dwell_ms / 1000.0)
-
-        # Wait for dumpcap to finish
-        time.sleep(2)
-
-        # If pcap is empty or missing, return empty
-        pcap_size = 0
-        try:
-            pcap_size = os.path.getsize(pcap_path)
-        except OSError:
-            pass
-        if pcap_size < 100:
-            return [], adapter
-
-        # Parse beacons AND probe responses
-        rows = run_tshark(pcap_path,
-            'wlan.fc.type_subtype == 0x0008 || wlan.fc.type_subtype == 0x0005', [
-            'wlan.bssid', 'wlan.ssid', 'radiotap.channel.freq',
-            'radiotap.dbm_antsignal',
-            'wlan.rsn.akms.type', 'wlan.rsn.pcs.type',
-            'wlan.wfa.ie.wpa.akms.type', 'wlan.wfa.ie.wpa.pcs.type',
-            'wlan.fixed.capabilities.privacy',
-            'wlan.ht.capabilities', 'wlan.vht.capabilities',
-            'wlan.tag.number', 'wlan.rsn.capabilities',
-        ], timeout=30)
-
-        # Deduplicate by BSSID, keep strongest signal
-        bssid_map = {}
-        for r in rows:
-            b = r.get('wlan.bssid', '').upper()
-            if not b or b == 'FF:FF:FF:FF:FF:FF':
-                continue
-
-            rssi_str = r.get('radiotap.dbm_antsignal', '')
-            try:
-                rssi = int(rssi_str.split(',')[0]) if rssi_str else -100
-            except (ValueError, IndexError):
-                rssi = -100
-
-            if b in bssid_map and bssid_map[b]['signal'] >= rssi:
-                # Keep existing if stronger, but fill in missing fields
-                existing = bssid_map[b]
-                if not existing['ssid'] and r.get('wlan.ssid'):
-                    existing['ssid'] = r['wlan.ssid']
-                continue
-
-            freq_str = r.get('radiotap.channel.freq', '')
-            try:
-                freq = int(float(freq_str)) if freq_str else 0
-            except ValueError:
-                freq = 0
-
-            band = ''
-            if 0 < freq < 3000: band = '2.4 GHz'
-            elif freq < 5900: band = '5 GHz'
-            elif freq > 0: band = '6 GHz'
-
-            ch = FREQ_TO_CHANNEL.get(freq, {}).get('channel', '') if freq else ''
-
-            # Security from RSN/WPA fields
-            rsn_akm = r.get('wlan.rsn.akms.type', '')
-            rsn_pcs = r.get('wlan.rsn.pcs.type', '')
-            wpa_akm = r.get('wlan.wfa.ie.wpa.akms.type', '')
-            wpa_pcs = r.get('wlan.wfa.ie.wpa.pcs.type', '')
-            privacy = r.get('wlan.fixed.capabilities.privacy', '')
-
-            has_rsn = bool(rsn_akm or rsn_pcs)
-            has_wpa_ie = bool(wpa_akm or wpa_pcs)
-
-            # Build security string
-            security = []
-            encryption = set()
-            auth = set()
-            has_sae = False
-            has_psk = False
-            has_enterprise = False
-
-            if rsn_akm:
-                for t in rsn_akm.split(','):
-                    t = t.strip()
-                    if t == '8': security.append('WPA3'); has_sae = True
-                    elif t == '2': security.append('WPA2'); has_psk = True
-                    elif t == '1': security.append('WPA2-Enterprise'); has_enterprise = True
-                    elif t == '6': security.append('WPA2'); has_psk = True
-                    elif t == '18': security.append('WPA3-OWE')
-                    elif t in ('3', '4'): security.append('FT')
-                for t in rsn_pcs.split(','):
-                    t = t.strip()
-                    if t == '4': encryption.add('CCMP')
-                    elif t == '2': encryption.add('TKIP')
-                auth.update(a.strip() for a in rsn_akm.split(',') if a.strip())
-
-            if wpa_akm:
-                security.append('WPA')
-                for t in wpa_pcs.split(','):
-                    t = t.strip()
-                    if t == '4': encryption.add('CCMP')
-                    elif t == '2': encryption.add('TKIP')
-                auth.update(a.strip() for a in wpa_akm.split(',') if a.strip())
-
-            if not security:
-                if privacy == '1':
-                    security.append('WEP')
-                else:
-                    security.append('Open')
-
-            # Wi-Fi generation
-            has_ht = bool(r.get('wlan.ht.capabilities'))
-            has_vht = bool(r.get('wlan.vht.capabilities'))
-            tags = set(r.get('wlan.tag.number', '').split(',')) if r.get('wlan.tag.number') else set()
-            has_he = '255' in tags
-
-            if has_he: standard = '802.11ax (Wi-Fi 6)'
-            elif has_vht: standard = '802.11ac (Wi-Fi 5)'
-            elif has_ht: standard = '802.11n (Wi-Fi 4)'
-            elif freq >= 5000: standard = '802.11a'
-            else: standard = '802.11b/g'
-
-            # PMF from RSN capabilities
-            pmf_capable = False
-            pmf_required = False
-            rsn_cap_str = r.get('wlan.rsn.capabilities', '')
-            if rsn_cap_str:
-                try:
-                    cap_val = int(rsn_cap_str, 0)
-                    if cap_val & 0x0040: pmf_capable = True
-                    if cap_val & 0x0080: pmf_required = True; pmf_capable = True
-                except ValueError:
-                    pass
-
-            pmf = 'Required' if pmf_required else ('Capable' if pmf_capable else 'No')
-
-            # Vulnerability assessment (simplified for monitor scan)
-            vulnerabilities = []
-            vuln_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0, 'info': 0}
-
-            is_open = 'Open' in security
-            is_wep = 'WEP' in security
-
-            if is_open and 'WPA3-OWE' not in security:
-                vulnerabilities.append({'severity': 'critical', 'id': 'OPEN_NETWORK',
-                    'title': 'Open network - no encryption',
-                    'description': 'All traffic in plaintext. Any device in range can intercept data.',
-                    'recommendation': 'Enable WPA3-SAE or WPA2-PSK.'})
-                vuln_counts['critical'] += 1
-            if is_wep:
-                vulnerabilities.append({'severity': 'critical', 'id': 'WEP_ENCRYPTION',
-                    'title': 'WEP encryption - cryptographically broken',
-                    'description': 'Can be cracked in minutes.',
-                    'recommendation': 'Upgrade to WPA2/WPA3.'})
-                vuln_counts['critical'] += 1
-            if has_psk and not has_sae and not pmf_required:
-                vulnerabilities.append({'severity': 'high', 'id': 'WPA2_NO_PMF',
-                    'title': 'WPA2-PSK without mandatory PMF',
-                    'description': 'Deauth attack + handshake capture possible.',
-                    'recommendation': 'Enable PMF or upgrade to WPA3-SAE.'})
-                vuln_counts['high'] += 1
-
-            sec_str = '/'.join(sorted(set(security)))
-            if encryption:
-                sec_str += f' ({"/".join(sorted(encryption))})'
-
-            ssid_name = r.get('wlan.ssid', '')
-            if not ssid_name:
-                ssid_name = '(Hidden)'
-
-            bssid_map[b] = {
-                'ssid': ssid_name,
-                'bssid': b,
-                'channel': ch,
-                'band': band,
-                'signal': rssi,
-                'security': sec_str,
-                'encryption': ', '.join(sorted(encryption)) if encryption else 'None',
-                'auth': ', '.join(sorted(auth)) if auth else 'None',
-                'standard': standard,
-                'bandwidth': '80 MHz' if has_vht else ('40 MHz' if has_ht else '20 MHz'),
-                'vendor': OUI_MAP.get(b[:8], 'Unknown'),
-                'pmf': pmf,
-                'wps': False,  # Can't reliably detect WPS from beacon tshark fields
-                'vulnerabilities': vulnerabilities,
-                'vuln_counts': vuln_counts,
-                'freq': freq,
-            }
-
-        networks = sorted(bssid_map.values(), key=lambda n: n['signal'], reverse=True)
-        return networks, adapter
-
-    finally:
-        try:
-            os.unlink(pcap_path)
-        except Exception:
-            pass
 
 
 @app.route('/networks')
