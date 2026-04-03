@@ -866,8 +866,57 @@ def download(adapter):
 
 scan_lock = threading.Lock()
 
+# OUI database: try loading from ieee oui.txt file, fall back to built-in map
+def _load_oui_file():
+    """Try to load OUI data from a local copy of the IEEE OUI file."""
+    oui_paths = [
+        '/usr/share/ieee-data/oui.txt',
+        '/usr/share/nmap/nmap-mac-prefixes',
+        '/usr/share/wireshark/manuf',
+        os.path.join(os.path.dirname(__file__), 'oui.txt'),
+    ]
+    loaded = {}
+    for path in oui_paths:
+        try:
+            if not os.path.exists(path):
+                continue
+            with open(path, 'r', errors='ignore') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    # IEEE oui.txt format: "XX-XX-XX   (hex)		Vendor Name"
+                    m = re.match(r'^([0-9A-Fa-f]{2}-[0-9A-Fa-f]{2}-[0-9A-Fa-f]{2})\s+\(hex\)\s+(.+)$', line)
+                    if m:
+                        prefix = m.group(1).upper().replace('-', ':')
+                        vendor = m.group(2).strip()
+                        loaded[prefix] = vendor
+                        continue
+                    # Wireshark manuf format: "XX:XX:XX	VendorShort	Vendor Long Name"
+                    m = re.match(r'^([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})\s+(\S+)\s*(.*)?$', line)
+                    if m:
+                        prefix = m.group(1).upper()
+                        vendor = m.group(3).strip() if m.group(3).strip() else m.group(2).strip()
+                        loaded[prefix] = vendor
+                        continue
+                    # nmap-mac-prefixes format: "XXXXXX Vendor Name"
+                    m = re.match(r'^([0-9A-Fa-f]{6})\s+(.+)$', line)
+                    if m:
+                        raw = m.group(1).upper()
+                        prefix = f"{raw[0:2]}:{raw[2:4]}:{raw[4:6]}"
+                        vendor = m.group(2).strip()
+                        loaded[prefix] = vendor
+                        continue
+            if loaded:
+                return loaded
+        except Exception:
+            continue
+    return None
+
+_oui_from_file = _load_oui_file()
+
 # Common OUI prefixes (first 3 octets) -> vendor name
-OUI_MAP = {
+_OUI_BUILTIN = {
     "00:00:5E": "IANA", "00:01:42": "Cisco", "00:03:6B": "Cisco",
     "00:03:93": "Apple", "00:05:69": "VMware", "00:0A:95": "Apple",
     "00:0C:29": "VMware", "00:0C:43": "Ralink", "00:0E:8E": "Aruba",
@@ -954,7 +1003,301 @@ OUI_MAP = {
     "C0:3F:0E": "Netgear", "A0:04:60": "Netgear",
     "E4:F0:42": "Google", "A4:77:33": "Google",
     "58:CB:52": "Google", "F4:F5:D8": "Google",
+    # Additional common vendors
+    "00:0C:E6": "Meru Networks", "00:12:0E": "AboCom", "00:12:17": "Cisco-Linksys",
+    "00:13:46": "D-Link", "00:14:BF": "Cisco-Linksys", "00:15:6D": "Ubiquiti",
+    "00:17:9A": "D-Link", "00:18:39": "Cisco-Linksys", "00:19:5B": "D-Link",
+    "00:1A:70": "Cisco-Linksys", "00:1C:DF": "Belkin", "00:1D:7E": "Cisco-Linksys",
+    "00:1E:E5": "Cisco-Linksys", "00:21:29": "Cisco", "00:22:6B": "Cisco",
+    "00:23:69": "Cisco-Linksys", "00:24:01": "D-Link", "00:25:00": "Apple",
+    "00:26:F2": "Netgear", "00:50:43": "Marvell",
+    "04:D5:90": "Fortinet", "04:E5:36": "Apple",
+    "08:00:27": "Oracle VirtualBox", "08:00:69": "Silicon Graphics",
+    "08:BD:43": "Netgear", "08:EA:44": "Extreme Networks",
+    "0C:47:C9": "Amazon", "0C:96:BF": "Huawei",
+    "10:0C:6B": "Netgear", "10:5B:AD": "Mega Well",
+    "10:DA:43": "Netgear", "10:E7:C6": "Huawei",
+    "14:1A:A3": "Motorola", "14:59:C0": "Netgear",
+    "14:AB:C5": "Intel", "14:DD:A9": "ASUSTek",
+    "18:31:BF": "ASUSTek", "18:A6:F7": "TP-Link",
+    "1C:3B:F3": "Espressif", "1C:69:7A": "Ubiquiti",
+    "20:47:47": "Dell", "20:C9:D0": "Apple",
+    "24:01:C7": "Cisco", "24:4B:FE": "ASUSTek",
+    "24:A0:74": "Apple", "24:DA:9B": "Motorola",
+    "28:16:AD": "Intel", "28:80:88": "Intel",
+    "28:C6:8E": "Netgear", "28:D2:44": "LCFC",
+    "2C:3A:FD": "Intel", "2C:4D:54": "ASUSTek",
+    "2C:56:DC": "ASUSTek", "2C:6E:85": "Intel",
+    "2C:91:AB": "CyberTAN", "2C:DB:07": "Intel",
+    "30:24:32": "Apple", "30:91:8F": "Technicolor",
+    "30:FD:38": "Google", "32:06:9A": "Samsung",
+    "34:02:86": "Intel", "34:13:E8": "Intel",
+    "34:29:8F": "Apple", "34:36:3B": "Apple",
+    "34:7C:25": "Apple", "34:E1:2D": "Intel",
+    "38:B1:DB": "HP", "38:C9:86": "Apple",
+    "38:DE:AD": "Intel", "38:F9:D3": "Apple",
+    "3C:06:30": "Apple", "3C:22:FB": "Apple",
+    "3C:52:A1": "Apple", "3C:91:80": "Intel",
+    "40:33:1A": "Apple", "40:49:0F": "Hon Hai",
+    "40:88:05": "Motorola", "40:9C:28": "Apple",
+    "40:B0:76": "ASUSTek", "40:CB:C0": "Apple",
+    "40:D3:AE": "Samsung", "40:F0:2F": "Liteon",
+    "44:03:2C": "Intel", "44:2A:60": "Apple",
+    "44:6D:57": "Liteon", "44:85:00": "Intel",
+    "48:2C:A0": "Xiaomi", "48:3B:38": "Apple",
+    "48:45:20": "Intel", "48:A4:72": "Samsung",
+    "48:D7:05": "Apple", "4C:34:88": "Intel",
+    "4C:57:CA": "Apple", "4C:EB:42": "Intel",
+    "50:32:37": "Apple", "50:ED:3C": "Apple",
+    "50:F7:22": "Apple", "54:26:96": "Apple",
+    "54:33:CB": "Apple", "54:72:4F": "Apple",
+    "54:AE:27": "Apple", "54:E4:3A": "Apple",
+    "58:1C:F8": "Samsung", "58:40:4E": "Apple",
+    "58:55:CA": "Apple", "58:B0:35": "Apple",
+    "5C:E9:1E": "Apple", "5C:F7:E6": "Apple",
+    "60:01:94": "Apple", "60:69:44": "Apple",
+    "60:8C:4A": "Apple", "60:A4:D0": "Samsung",
+    "60:F8:1D": "Apple", "60:FE:C5": "Apple",
+    "64:20:0C": "Apple", "64:4B:F0": "Huawei",
+    "64:76:BA": "Apple", "64:9A:BE": "Apple",
+    "64:B0:A6": "Apple", "68:5B:35": "Apple",
+    "68:96:7B": "Apple", "68:AB:1E": "Apple",
+    "68:D9:3C": "Apple", "68:DB:CA": "Apple",
+    "6C:19:C0": "Apple", "6C:40:08": "Apple",
+    "6C:4D:73": "Apple", "6C:70:9F": "Apple",
+    "6C:94:66": "Apple", "6C:96:CF": "Apple",
+    "70:11:24": "Apple", "70:48:0F": "Apple",
+    "70:56:81": "Apple", "70:73:CB": "Apple",
+    "70:DE:E2": "Apple", "70:EC:E4": "Apple",
+    "70:F0:87": "Apple", "74:42:8B": "Intel",
+    "74:8D:08": "Apple", "74:E2:F5": "Apple",
+    "78:31:C1": "Apple", "78:67:D7": "Apple",
+    "78:7E:61": "Apple", "78:88:6D": "Apple",
+    "78:9F:70": "Apple", "78:CA:39": "Apple",
+    "78:D7:5F": "Samsung", "7C:04:D0": "Apple",
+    "7C:50:49": "Apple", "7C:6D:62": "Apple",
+    "7C:9A:1D": "Apple", "7C:C3:A1": "Apple",
+    "80:00:6E": "Apple", "80:49:71": "Apple",
+    "80:82:23": "Apple", "80:B0:3D": "Apple",
+    "80:E6:50": "Apple", "80:ED:2C": "Apple",
+    "84:38:35": "Apple", "84:78:8B": "Apple",
+    "84:85:06": "Apple", "84:AB:1A": "Apple",
+    "84:B1:53": "Apple", "84:FC:AC": "Apple",
+    "88:19:08": "Apple", "88:1F:A1": "Apple",
+    "88:53:95": "Apple", "88:63:DF": "Apple",
+    "88:66:A5": "Apple", "88:C9:D0": "Apple",
+    "88:E8:7F": "Apple", "8C:00:6D": "Apple",
+    "8C:29:37": "Apple", "8C:58:77": "Apple",
+    "8C:7B:9D": "Apple", "8C:FA:BA": "Apple",
+    "90:27:E4": "Apple", "90:3C:92": "Apple",
+    "90:84:0D": "Apple", "90:8D:6C": "Apple",
+    "90:B0:ED": "Apple", "90:B2:1F": "Apple",
+    "90:B6:86": "Apple", "90:FD:61": "Apple",
+    "94:E9:6A": "Apple", "94:F6:A3": "Apple",
+    "98:01:A7": "Apple", "98:03:D8": "Apple",
+    "98:46:0A": "Apple", "98:5A:EB": "Apple",
+    "98:9E:63": "Apple", "98:B8:E3": "Apple",
+    "98:D6:BB": "Apple", "98:E0:D9": "Apple",
+    "98:F0:AB": "Apple", "98:FE:94": "Apple",
+    "9C:20:7B": "Apple", "9C:35:EB": "Apple",
+    "9C:4F:DA": "Apple", "9C:84:BF": "Apple",
+    "9C:F4:8E": "Apple", "A0:11:65": "Intel",
+    "A0:18:28": "Intel", "A0:78:17": "Apple",
+    "A0:99:9B": "Apple", "A0:D7:95": "Apple",
+    "A0:ED:CD": "Apple", "A4:5E:60": "Apple",
+    "A4:67:06": "Apple", "A4:83:E7": "Apple",
+    "A4:B1:97": "Apple", "A4:D1:8C": "Apple",
+    "A4:D1:D2": "Intel", "A4:E9:75": "Apple",
+    "A8:20:66": "Apple", "A8:5C:2C": "Apple",
+    "A8:60:B6": "Apple", "A8:66:7F": "Apple",
+    "A8:8E:24": "Apple", "A8:BB:CF": "Apple",
+    "A8:FA:D8": "Apple", "AC:1F:74": "Apple",
+    "AC:29:3A": "Apple", "AC:3C:0B": "Apple",
+    "AC:BC:32": "Apple", "AC:CF:5C": "Apple",
+    "AC:E4:B5": "Apple", "AC:FD:EC": "Apple",
+    "B0:19:C6": "Apple", "B0:34:95": "Apple",
+    "B0:48:1A": "Apple", "B0:65:BD": "Apple",
+    "B0:70:2D": "Apple", "B0:9F:BA": "Apple",
+    "B4:18:D1": "Apple", "B4:8B:19": "Apple",
+    "B4:F0:AB": "Apple", "B8:09:8A": "Apple",
+    "B8:17:C2": "Apple", "B8:41:A4": "Apple",
+    "B8:44:D9": "Apple", "B8:63:4D": "Apple",
+    "B8:78:2E": "Apple", "B8:C1:11": "Apple",
+    "B8:F6:B1": "Apple", "B8:FF:61": "Apple",
+    "BC:3A:EA": "Apple", "BC:52:B7": "Apple",
+    "BC:54:36": "Apple", "BC:6C:21": "Apple",
+    "BC:9F:EF": "Apple", "BC:A9:20": "Apple",
+    "BC:D0:74": "Apple", "BC:E1:43": "Apple",
+    "C0:1A:DA": "Apple", "C0:63:94": "Apple",
+    "C0:84:7A": "Apple", "C0:A5:3E": "Apple",
+    "C0:B6:58": "Apple", "C0:CC:F8": "Apple",
+    "C0:D0:12": "Apple",
+    "C4:2A:D0": "Apple", "C4:B3:01": "Apple",
+    "C8:2A:14": "Apple", "C8:33:4B": "Apple",
+    "C8:69:CD": "Apple", "C8:85:50": "Apple",
+    "C8:B2:1E": "Apple", "C8:D0:83": "Apple",
+    "CC:08:8D": "Apple", "CC:20:E8": "Apple",
+    "CC:25:EF": "Apple", "CC:44:63": "Apple",
+    "CC:78:5F": "Apple", "CC:C7:60": "Apple",
+    "D0:03:4B": "Apple", "D0:25:98": "Apple",
+    "D0:33:11": "Apple", "D0:4F:7E": "Apple",
+    "D0:81:7A": "Apple", "D0:C5:F3": "Apple",
+    "D0:D2:B0": "Apple", "D4:61:9D": "Apple",
+    "D4:9A:20": "Apple", "D4:A3:3D": "Apple",
+    "D4:DC:CD": "Apple", "D4:F4:6F": "Apple",
+    "D8:00:4D": "Apple", "D8:1D:72": "Apple",
+    "D8:30:62": "Apple", "D8:9E:3F": "Apple",
+    "D8:A2:5E": "Apple", "D8:BB:2C": "Apple",
+    "D8:CF:9C": "Apple",
+    "DC:08:56": "Apple", "DC:0C:5C": "Apple",
+    "DC:2B:2A": "Apple", "DC:41:5F": "Apple",
+    "DC:56:E7": "Apple", "DC:86:D8": "Apple",
+    "E0:33:8E": "Apple", "E0:5F:45": "Apple",
+    "E0:66:78": "Apple", "E0:B5:2D": "Apple",
+    "E0:C7:67": "Apple", "E0:C9:7A": "Apple",
+    "E4:25:E7": "Apple", "E4:8B:7F": "Apple",
+    "E4:C6:3D": "Apple", "E4:CE:8F": "Apple",
+    "E4:E4:AB": "Apple", "E8:06:88": "Apple",
+    "E8:80:2E": "Apple",
+    "EC:35:86": "Apple", "EC:85:2F": "Apple",
+    "F0:18:98": "Apple", "F0:72:EA": "Apple",
+    "F0:99:BF": "Apple", "F0:B4:79": "Apple",
+    "F0:C1:F1": "Apple", "F0:CB:A1": "Apple",
+    "F0:D1:A9": "Apple", "F0:DB:E2": "Apple",
+    "F4:06:16": "Apple", "F4:31:C3": "Apple",
+    "F4:37:B7": "Apple", "F4:5C:89": "Apple",
+    "F8:27:93": "Apple", "F8:38:80": "Apple",
+    "F8:62:14": "Apple", "F8:E9:4E": "Apple",
+    "FC:25:3F": "Apple", "FC:E9:98": "Apple",
+    # Samsung
+    "00:07:AB": "Samsung", "00:12:FB": "Samsung", "00:15:99": "Samsung",
+    "00:16:32": "Samsung", "00:17:D5": "Samsung", "00:18:AF": "Samsung",
+    "00:1B:98": "Samsung", "00:1C:43": "Samsung", "00:1D:25": "Samsung",
+    "00:1E:E1": "Samsung", "00:1E:E2": "Samsung", "00:21:4C": "Samsung",
+    "00:21:D1": "Samsung", "00:21:D2": "Samsung", "00:23:39": "Samsung",
+    "00:23:D6": "Samsung", "00:23:D7": "Samsung", "00:24:54": "Samsung",
+    "00:25:66": "Samsung", "00:25:67": "Samsung", "00:26:37": "Samsung",
+    "14:49:E0": "Samsung", "14:89:FD": "Samsung", "18:3A:2D": "Samsung",
+    "18:67:B0": "Samsung", "1C:62:B8": "Samsung", "24:18:1D": "Samsung",
+    "2C:AE:2B": "Samsung", "30:C7:AE": "Samsung", "34:14:5F": "Samsung",
+    "34:C3:AC": "Samsung", "38:01:97": "Samsung", "3C:5A:37": "Samsung",
+    "40:4E:36": "Samsung", "44:78:3E": "Samsung", "48:44:F7": "Samsung",
+    "4C:3C:16": "Samsung", "50:01:BB": "Samsung", "50:B7:C3": "Samsung",
+    "50:CC:F8": "Samsung", "54:92:BE": "Samsung", "58:C3:8B": "Samsung",
+    "5C:0A:5B": "Samsung", "5C:3C:27": "Samsung", "64:B3:10": "Samsung",
+    "6C:F3:73": "Samsung", "78:47:1D": "Samsung", "78:52:1A": "Samsung",
+    "78:AB:BB": "Samsung", "84:11:9E": "Samsung", "84:25:DB": "Samsung",
+    "84:55:A5": "Samsung", "84:B5:41": "Samsung", "88:32:9B": "Samsung",
+    "8C:F5:A3": "Samsung", "90:18:7C": "Samsung", "94:01:C2": "Samsung",
+    "94:35:0A": "Samsung", "94:51:03": "Samsung", "98:0C:82": "Samsung",
+    "9C:3A:AF": "Samsung", "A0:07:98": "Samsung", "A4:08:EA": "Samsung",
+    "A8:7C:01": "Samsung", "AC:36:13": "Samsung", "B0:47:BF": "Samsung",
+    "B0:72:BF": "Samsung", "B4:3A:28": "Samsung", "B4:79:A7": "Samsung",
+    "B8:5A:73": "Samsung", "BC:14:EF": "Samsung", "BC:72:B1": "Samsung",
+    "BC:76:5E": "Samsung", "C0:BD:D1": "Samsung", "C4:73:1E": "Samsung",
+    "C8:BA:94": "Samsung", "CC:07:AB": "Samsung", "D0:22:BE": "Samsung",
+    "D0:66:7B": "Samsung", "D0:87:E2": "Samsung", "D4:88:90": "Samsung",
+    "D8:57:EF": "Samsung", "E4:12:1D": "Samsung", "E4:58:B8": "Samsung",
+    "E8:3A:12": "Samsung", "EC:1F:72": "Samsung", "EC:E0:9B": "Samsung",
+    "F0:25:B7": "Samsung", "F0:5A:09": "Samsung", "F4:7B:5E": "Samsung",
+    "F8:04:2E": "Samsung", "FC:A1:3E": "Samsung",
+    # Microsoft / Xbox
+    "28:18:78": "Microsoft", "7C:1E:52": "Microsoft", "60:45:BD": "Microsoft",
+    # Google / Nest
+    "F8:8F:CA": "Google", "DC:E5:5B": "Google", "A4:C6:39": "Google",
+    # Huawei / Honor
+    "00:1E:10": "Huawei", "00:25:68": "Huawei", "00:25:9E": "Huawei",
+    "00:46:4B": "Huawei", "04:02:1F": "Huawei", "04:B0:E7": "Huawei",
+    "04:F9:38": "Huawei", "08:19:A6": "Huawei", "08:63:61": "Huawei",
+    "0C:37:DC": "Huawei", "10:1B:54": "Huawei", "10:44:00": "Huawei",
+    "14:30:04": "Huawei", "14:B9:68": "Huawei", "18:DE:D7": "Huawei",
+    "20:08:ED": "Huawei", "20:A6:80": "Huawei", "20:F1:7C": "Huawei",
+    "24:09:95": "Huawei", "24:44:27": "Huawei", "24:69:A5": "Huawei",
+    "28:31:52": "Huawei", "28:6E:D4": "Huawei", "2C:9D:1E": "Huawei",
+    "30:D1:7E": "Huawei", "34:00:A3": "Huawei", "34:CD:BE": "Huawei",
+    "38:F8:89": "Huawei", "3C:47:11": "Huawei", "3C:DF:A9": "Huawei",
+    "40:4D:8E": "Huawei", "44:55:B1": "Huawei", "48:00:31": "Huawei",
+    "48:46:FB": "Huawei", "48:AD:08": "Huawei", "4C:1F:CC": "Huawei",
+    "4C:B1:6C": "Huawei", "50:A7:2B": "Huawei", "54:A5:1B": "Huawei",
+    "58:2A:F7": "Huawei", "5C:09:79": "Huawei", "5C:4C:A9": "Huawei",
+    "60:DE:44": "Huawei", "60:E7:01": "Huawei", "64:16:F0": "Huawei",
+    "68:A0:F6": "Huawei", "70:72:3C": "Huawei", "70:79:90": "Huawei",
+    "74:88:2A": "Huawei", "78:D3:8D": "Huawei", "7C:60:97": "Huawei",
+    "80:B6:86": "Huawei", "80:D0:9B": "Huawei", "84:A8:E4": "Huawei",
+    "88:28:B3": "Huawei", "88:3F:D3": "Huawei", "88:53:D4": "Huawei",
+    "8C:34:FD": "Huawei", "8C:E5:EF": "Huawei", "90:4E:2B": "Huawei",
+    "94:04:9C": "Huawei", "94:77:2B": "Huawei", "98:9C:57": "Huawei",
+    "9C:28:EF": "Huawei", "9C:74:1A": "Huawei", "A4:BA:76": "Huawei",
+    "AC:61:EA": "Huawei", "AC:E2:15": "Huawei", "B4:15:13": "Huawei",
+    "B4:CD:27": "Huawei", "C0:70:09": "Huawei", "C4:07:2F": "Huawei",
+    "C8:14:79": "Huawei", "C8:D1:5E": "Huawei", "CC:96:A0": "Huawei",
+    "D0:7A:B5": "Huawei", "D4:6A:A8": "Huawei", "D4:B1:10": "Huawei",
+    "D8:49:0B": "Huawei", "DC:D2:FC": "Huawei", "E0:19:1D": "Huawei",
+    "E0:24:7F": "Huawei", "E4:68:A3": "Huawei", "E8:08:8B": "Huawei",
+    "EC:23:3D": "Huawei", "F4:4C:7F": "Huawei", "F4:63:1F": "Huawei",
+    "F4:C7:14": "Huawei", "F8:01:13": "Huawei", "F8:4A:BF": "Huawei",
+    "FC:48:EF": "Huawei",
+    # Xiaomi / Redmi
+    "00:9E:C8": "Xiaomi", "04:CF:8C": "Xiaomi", "08:C0:EB": "Xiaomi",
+    "0C:1D:AF": "Xiaomi", "10:2A:B3": "Xiaomi", "14:F6:5A": "Xiaomi",
+    "18:59:36": "Xiaomi", "1C:BF:CE": "Xiaomi", "20:34:FB": "Xiaomi",
+    "28:E3:1F": "Xiaomi", "34:80:B3": "Xiaomi", "38:A4:ED": "Xiaomi",
+    "3C:BD:3E": "Xiaomi", "44:23:7C": "Xiaomi", "50:64:2B": "Xiaomi",
+    "54:48:E6": "Xiaomi", "58:44:98": "Xiaomi", "5C:B8:CB": "Xiaomi",
+    "64:B4:73": "Xiaomi", "68:DF:DD": "Xiaomi", "6C:5C:3D": "Xiaomi",
+    "74:23:44": "Xiaomi", "78:02:F8": "Xiaomi", "7C:8B:B5": "Xiaomi",
+    "84:CE:32": "Xiaomi", "8C:BF:A6": "Xiaomi", "90:78:B2": "Xiaomi",
+    "9C:99:A0": "Xiaomi", "A4:77:58": "Xiaomi", "AC:C1:EE": "Xiaomi",
+    "B0:E2:35": "Xiaomi", "B4:A3:82": "Xiaomi", "C4:0B:CB": "Xiaomi",
+    "C8:58:C0": "Xiaomi", "D4:61:DA": "Xiaomi", "E4:46:DA": "Xiaomi",
+    "F0:B4:D2": "Xiaomi", "F8:A4:5F": "Xiaomi", "FC:64:BA": "Xiaomi",
+    # OnePlus / OPPO / Realme
+    "94:65:2D": "OnePlus", "C0:EE:FB": "OnePlus", "64:A2:F9": "OnePlus",
+    # Lenovo
+    "00:09:2D": "Lenovo", "28:D2:44": "Lenovo", "50:7B:9D": "Lenovo",
+    "60:D8:19": "Lenovo", "74:E6:1C": "Lenovo", "8C:16:45": "Lenovo",
+    "98:54:1B": "Lenovo", "A4:34:D9": "Lenovo", "C8:21:58": "Lenovo",
+    "E8:2A:44": "Lenovo", "F0:03:8C": "Lenovo",
+    # Dell
+    "B0:83:FE": "Dell", "C8:1F:66": "Dell", "D4:BE:D9": "Dell",
+    "F0:1F:AF": "Dell", "F8:B1:56": "Dell",
+    # HP
+    "00:14:38": "HP", "00:17:A4": "HP", "00:1A:4B": "HP",
+    "00:1E:0B": "HP", "00:21:5A": "HP", "00:25:B3": "HP",
+    "10:1F:74": "HP", "28:92:4A": "HP", "30:8D:99": "HP",
+    "3C:D9:2B": "HP", "44:31:92": "HP", "48:0F:CF": "HP",
+    "5C:B9:01": "HP", "68:B5:99": "HP", "80:CE:62": "HP",
+    "94:57:A5": "HP", "A0:1D:48": "HP", "B4:99:BA": "HP",
+    # Sony / PlayStation
+    "00:04:1F": "Sony", "00:13:A9": "Sony", "00:1D:0D": "Sony",
+    "00:24:BE": "Sony", "28:0D:FC": "Sony", "70:9E:29": "Sony",
+    "AC:89:95": "Sony", "FC:0F:E6": "Sony",
+    # Amazon / Kindle / Echo / Ring
+    "00:FC:8B": "Amazon", "0C:47:C9": "Amazon", "10:CE:A9": "Amazon",
+    "14:91:38": "Amazon", "18:74:2E": "Amazon", "34:D2:70": "Amazon",
+    "38:F7:3D": "Amazon", "40:A2:DB": "Amazon", "44:65:0D": "Amazon",
+    "4C:19:5D": "Amazon", "50:DC:E7": "Amazon", "58:A2:B5": "Amazon",
+    "5C:41:5A": "Amazon", "68:37:E9": "Amazon", "68:54:FD": "Amazon",
+    "74:75:48": "Amazon", "74:C2:46": "Amazon", "78:E1:03": "Amazon",
+    "84:D6:D0": "Amazon", "A0:02:DC": "Amazon", "A4:08:01": "Amazon",
+    "AC:63:BE": "Amazon", "B0:FC:36": "Amazon", "B4:7C:9C": "Amazon",
+    "C8:FB:26": "Amazon", "CC:9E:A2": "Amazon", "F0:27:2D": "Amazon",
+    "F0:81:73": "Amazon", "F0:F0:A4": "Amazon", "FC:65:DE": "Amazon",
+    # Sonos
+    "00:0E:58": "Sonos", "34:7E:5C": "Sonos", "48:A6:B8": "Sonos",
+    "54:2A:1B": "Sonos", "5C:AA:FD": "Sonos", "78:28:CA": "Sonos",
+    "94:9F:3E": "Sonos", "B8:E9:37": "Sonos",
+    # Roku
+    "00:0D:4B": "Roku", "08:05:81": "Roku", "10:59:32": "Roku",
+    "20:EF:BD": "Roku", "3C:59:1E": "Roku", "84:EA:ED": "Roku",
+    "B0:A7:B9": "Roku", "B8:3E:59": "Roku", "C8:3A:6B": "Roku",
+    "D0:4D:C6": "Roku", "DC:3A:5E": "Roku",
 }
+
+# Merge: file-based OUI takes precedence, then built-in
+OUI_MAP = dict(_OUI_BUILTIN)
+if _oui_from_file:
+    OUI_MAP.update(_oui_from_file)
 
 def parse_iw_scan(output):
     networks = []
@@ -1007,22 +1350,27 @@ def parse_iw_scan(output):
 
         stripped = line.strip()
 
-        # Detect end of RSN/WPA sub-block by non-indented or new section
-        if in_rsn and (not line.startswith('\t\t') or stripped.startswith('*')):
-            if not stripped.startswith('Group') and not stripped.startswith('Pairwise') and not stripped.startswith('Authentication'):
+        # Detect end of RSN/WPA sub-block
+        # RSN/WPA content lines are indented with tabs and start with "* "
+        # The block ends when we hit a line that is NOT part of the RSN/WPA structure
+        if in_rsn and stripped and not stripped.startswith('*') and not stripped.startswith('RSN'):
+            # Check if this is a non-RSN section header (e.g. "HT capabilities:", "WPA:", etc.)
+            if not line.startswith('\t\t'):
                 in_rsn = False
-        if in_wpa and (not line.startswith('\t\t') or stripped.startswith('*')):
-            if not stripped.startswith('Group') and not stripped.startswith('Pairwise') and not stripped.startswith('Authentication'):
+        if in_wpa and stripped and not stripped.startswith('*') and not stripped.startswith('WPA'):
+            if not line.startswith('\t\t'):
                 in_wpa = False
 
-        # RSN block start
-        if stripped == 'RSN:':
+        # RSN block start (handles both "RSN:" and "RSN:	 * Version: 1")
+        if stripped == 'RSN:' or stripped.startswith('RSN:'):
             in_rsn = True
+            in_wpa = False
             rsn_info = {'pairwise': [], 'akm': [], 'group': '', 'capabilities': ''}
             continue
         # WPA block start
-        if stripped == 'WPA:':
+        if stripped == 'WPA:' or stripped.startswith('WPA:'):
             in_wpa = True
+            in_rsn = False
             wpa_info = {'pairwise': [], 'akm': [], 'group': '', 'capabilities': ''}
             continue
 
