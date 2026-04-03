@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wi-Fi Channel Analysis</title>
+    <style>
+        body { font-family: sans-serif; background: #f8f9fa; padding: 1rem; margin: 0; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+        .header h1 { margin: 0; font-size: 1.4rem; }
+        .btn { padding: 0.5rem 1rem; border: none; border-radius: 0.25rem; cursor: pointer; font-size: 0.9rem; text-decoration: none; display: inline-block; }
+        .btn-primary { background: #0d6efd; color: white; }
+        .btn-primary:disabled { background: #6c9bd2; cursor: not-allowed; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.85rem; }
+        .card { border: 1px solid #dee2e6; border-radius: 0.375rem; background: white; margin-bottom: 1rem; overflow: hidden; }
+        .card-header { background: #e9ecef; padding: 0.75rem; font-weight: bold; }
+        .card-body { padding: 1rem; }
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #0d6efd; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 0.3rem; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .hidden { display: none !important; }
+
+        /* Channel bars */
+        .channel-section { margin-bottom: 1.5rem; }
+        .channel-section h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+        .ch-bar-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; font-size: 0.82rem; }
+        .ch-label { min-width: 55px; text-align: right; font-weight: bold; }
+        .ch-label.recommended { color: #198754; }
+        .ch-track { flex: 1; background: #e9ecef; border-radius: 0.15rem; height: 22px; overflow: hidden; }
+        .ch-fill { height: 100%; border-radius: 0.15rem; display: flex; align-items: center; padding-left: 0.4rem; font-size: 0.75rem; color: white; font-weight: bold; transition: width 0.3s; }
+        .ch-count { min-width: 30px; font-size: 0.82rem; }
+        .ch-green { background: #198754; }
+        .ch-yellow { background: #ffc107; }
+        .ch-red { background: #dc3545; }
+
+        /* Issues */
+        .issue { padding: 0.6rem; margin-bottom: 0.4rem; border-radius: 0.25rem; border-left: 4px solid #ccc; background: white; font-size: 0.85rem; }
+        .issue.warn { border-left-color: #fd7e14; background: #fff8f0; }
+        .issue.info { border-left-color: #0dcaf0; background: #f0fbff; }
+        .issue.good { border-left-color: #198754; background: #f0fff4; }
+        .issue strong { display: block; margin-bottom: 0.2rem; }
+
+        /* Recommendations */
+        .rec-card { padding: 0.75rem; border-radius: 0.25rem; background: #e8f0fe; border: 1px solid #b6d4fe; margin-bottom: 0.5rem; }
+        .rec-card h4 { margin: 0 0 0.3rem; color: #0d6efd; }
+
+        /* Utilisation table */
+        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        th { background: #e9ecef; padding: 0.5rem; text-align: left; }
+        td { padding: 0.5rem; border-top: 1px solid #eee; }
+
+        .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.5rem; margin-bottom: 1rem; }
+        .summary-card { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.75rem; text-align: center; }
+        .summary-card .value { font-size: 1.4rem; font-weight: bold; color: #0d6efd; }
+        .summary-card .label { font-size: 0.8rem; color: #666; }
+
+        @media (max-width: 600px) {
+            .header h1 { font-size: 1.2rem; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>Wi-Fi Channel Analysis</h1>
+        <div>
+            <button class="btn btn-primary" id="scan-btn" onclick="doScan()">Scan &amp; Analyse</button>
+            <a href="/networks" class="btn btn-secondary btn-sm">Network scanner</a>
+            <a href="/survey" class="btn btn-secondary btn-sm">Site survey</a>
+            <a href="/analyzer" class="btn btn-secondary btn-sm">Pcap analyser</a>
+            <a href="/ap-models" class="btn btn-secondary btn-sm">AP models</a>
+            <a href="/files" class="btn btn-secondary btn-sm">Files</a>
+            <a href="/" class="btn btn-secondary btn-sm">Capture</a>
+        </div>
+    </div>
+
+    <div id="status-bar" style="font-size:0.9rem;color:#666;margin-bottom:0.5rem;"></div>
+
+    <div id="results" class="hidden">
+        <div class="summary-grid" id="summary-grid"></div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+            <div class="card">
+                <div class="card-header">2.4 GHz Channel Map</div>
+                <div class="card-body" id="map-24"></div>
+            </div>
+            <div class="card">
+                <div class="card-header">5 GHz Channel Map</div>
+                <div class="card-body" id="map-5"></div>
+            </div>
+        </div>
+
+        <div id="map-6-wrap" class="hidden">
+            <div class="card">
+                <div class="card-header">6 GHz Channel Map</div>
+                <div class="card-body" id="map-6"></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">Issues &amp; Warnings</div>
+            <div class="card-body" id="issues"></div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">Optimal Channel Recommendations</div>
+            <div class="card-body" id="recommendations"></div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">Channel Utilisation (from BSS Load)</div>
+            <div class="card-body">
+                <div style="overflow-x:auto;">
+                    <table><thead><tr>
+                        <th>SSID</th><th>BSSID</th><th>Ch</th><th>Band</th><th>Stations</th><th>Utilisation</th>
+                    </tr></thead><tbody id="util-body"></tbody></table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+
+const STANDARD_24 = [1, 6, 11];
+const ALL_24 = [1,2,3,4,5,6,7,8,9,10,11,12,13];
+
+function doScan() {
+    const btn = document.getElementById('scan-btn');
+    const status = document.getElementById('status-bar');
+    btn.disabled = true;
+    btn.textContent = 'Scanning...';
+    status.innerHTML = '<span class="spinner"></span> Scanning for networks...';
+
+    fetch('/scan')
+        .then(res => {
+            if (!res.ok) return res.json().then(d => { throw new Error(d.error || 'Scan failed'); });
+            return res.json();
+        })
+        .then(data => {
+            status.textContent = `${data.count} networks found at ${data.timestamp}`;
+            analyseChannels(data.networks);
+            document.getElementById('results').classList.remove('hidden');
+        })
+        .catch(err => { status.textContent = 'Error: ' + err.message; })
+        .finally(() => { btn.disabled = false; btn.textContent = 'Scan & Analyse'; });
+}
+
+function analyseChannels(networks) {
+    // Group by band and channel
+    const ch24 = {}, ch5 = {}, ch6 = {};
+    let count24 = 0, count5 = 0, count6 = 0;
+
+    networks.forEach(n => {
+        const ch = parseInt(n.channel) || 0;
+        if (!ch) return;
+        if (n.band === '2.4 GHz') {
+            ch24[ch] = (ch24[ch] || []);
+            ch24[ch].push(n);
+            count24++;
+        } else if (n.band === '5 GHz') {
+            ch5[ch] = (ch5[ch] || []);
+            ch5[ch].push(n);
+            count5++;
+        } else if (n.band === '6 GHz') {
+            ch6[ch] = (ch6[ch] || []);
+            ch6[ch].push(n);
+            count6++;
+        }
+    });
+
+    // Summary
+    document.getElementById('summary-grid').innerHTML = `
+        <div class="summary-card"><div class="value">${networks.length}</div><div class="label">Total Networks</div></div>
+        <div class="summary-card"><div class="value">${count24}</div><div class="label">2.4 GHz</div></div>
+        <div class="summary-card"><div class="value">${count5}</div><div class="label">5 GHz</div></div>
+        <div class="summary-card"><div class="value">${count6}</div><div class="label">6 GHz</div></div>
+    `;
+
+    // Render channel maps
+    renderChannelMap('map-24', ch24, ALL_24, STANDARD_24);
+    const all5 = Object.keys(ch5).map(Number).sort((a,b) => a - b);
+    if (all5.length === 0) all5.push(36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165);
+    renderChannelMap('map-5', ch5, all5, []);
+    if (count6 > 0) {
+        document.getElementById('map-6-wrap').classList.remove('hidden');
+        const all6 = Object.keys(ch6).map(Number).sort((a,b) => a - b);
+        renderChannelMap('map-6', ch6, all6, []);
+    }
+
+    // Issues
+    const issues = [];
+
+    // Adjacent channel interference (2.4 GHz)
+    for (const [ch, aps] of Object.entries(ch24)) {
+        const c = parseInt(ch);
+        if (!STANDARD_24.includes(c)) {
+            const affected = [];
+            if (c > 1 && c < 6) affected.push(1, 6);
+            else if (c > 6 && c < 11) affected.push(6, 11);
+            else if (c > 11) affected.push(11);
+            aps.forEach(ap => {
+                issues.push({
+                    type: 'warn',
+                    title: `Non-standard 2.4 GHz channel ${c}`,
+                    desc: `${ap.ssid || ap.bssid} on channel ${c} causes adjacent channel interference with channels ${affected.join(', ')}.`
+                });
+            });
+        }
+    }
+
+    // 40 MHz in 2.4 GHz detection
+    networks.forEach(n => {
+        if (n.band === '2.4 GHz' && n.bandwidth && n.bandwidth.includes('40')) {
+            issues.push({
+                type: 'warn',
+                title: '40 MHz channel in 2.4 GHz',
+                desc: `${n.ssid || n.bssid} (Ch ${n.channel}) uses HT40. In congested 2.4 GHz environments this causes severe interference.`
+            });
+        }
+    });
+
+    // Heavy congestion
+    for (const [ch, aps] of Object.entries(ch24)) {
+        if (aps.length >= 7) {
+            issues.push({
+                type: 'warn',
+                title: `Heavy congestion on 2.4 GHz channel ${ch}`,
+                desc: `${aps.length} APs detected on channel ${ch}. High contention will degrade performance.`
+            });
+        }
+    }
+
+    // Channel utilisation > 60%
+    networks.forEach(n => {
+        if (n.channel_utilisation && n.channel_utilisation > 60) {
+            issues.push({
+                type: 'warn',
+                title: `High utilisation on channel ${n.channel}`,
+                desc: `${n.ssid || n.bssid} reports ${n.channel_utilisation}% channel utilisation.`
+            });
+        }
+    });
+
+    if (issues.length === 0) {
+        issues.push({ type: 'good', title: 'No channel issues detected', desc: 'The RF environment looks clean.' });
+    }
+
+    document.getElementById('issues').innerHTML = issues.map(i =>
+        `<div class="issue ${i.type}"><strong>${esc(i.title)}</strong>${esc(i.desc)}</div>`
+    ).join('');
+
+    // Recommendations
+    let recs = '';
+
+    // 2.4 GHz recommendation
+    const best24 = STANDARD_24.map(c => ({ ch: c, count: (ch24[c] || []).length }))
+        .sort((a, b) => a.count - b.count);
+    recs += `<div class="rec-card"><h4>2.4 GHz</h4>Recommended channel: <strong>${best24[0].ch}</strong> (${best24[0].count} APs). `;
+    recs += `Channel load: ${STANDARD_24.map(c => `Ch ${c}: ${(ch24[c] || []).length} APs`).join(', ')}.</div>`;
+
+    // 5 GHz recommendation
+    const dfs = [52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144];
+    const nonDfs = [36,40,44,48,149,153,157,161,165];
+    const best5NonDfs = nonDfs.map(c => ({ ch: c, count: (ch5[c] || []).length }))
+        .sort((a, b) => a.count - b.count);
+    const best5Dfs = dfs.map(c => ({ ch: c, count: (ch5[c] || []).length }))
+        .sort((a, b) => a.count - b.count);
+    recs += `<div class="rec-card"><h4>5 GHz</h4>Recommended non-DFS channel: <strong>${best5NonDfs[0].ch}</strong> (${best5NonDfs[0].count} APs). `;
+    recs += `Recommended DFS channel: <strong>${best5Dfs[0].ch}</strong> (${best5Dfs[0].count} APs). DFS channels often have less congestion.</div>`;
+
+    document.getElementById('recommendations').innerHTML = recs;
+
+    // Utilisation table
+    const utilBody = document.getElementById('util-body');
+    const withUtil = networks.filter(n => n.station_count !== undefined || n.channel_utilisation !== undefined);
+    if (withUtil.length) {
+        utilBody.innerHTML = withUtil.map(n => {
+            const util = n.channel_utilisation !== undefined ? n.channel_utilisation + '%' : 'N/A';
+            const utilColor = n.channel_utilisation > 60 ? '#dc3545' : n.channel_utilisation > 30 ? '#fd7e14' : '#198754';
+            return `<tr><td>${esc(n.ssid)}</td><td>${esc(n.bssid)}</td><td>${n.channel}</td><td>${esc(n.band)}</td>
+                <td>${n.station_count || 'N/A'}</td>
+                <td style="color:${utilColor};font-weight:bold;">${util}</td></tr>`;
+        }).join('');
+    } else {
+        utilBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">No BSS Load data available. APs must advertise BSS Load element.</td></tr>';
+    }
+}
+
+function renderChannelMap(containerId, channelData, allChannels, recommended) {
+    const container = document.getElementById(containerId);
+    const maxAps = Math.max(1, ...allChannels.map(c => (channelData[c] || []).length));
+
+    let html = '';
+    allChannels.forEach(ch => {
+        const aps = channelData[ch] || [];
+        const count = aps.length;
+        const pct = (count / maxAps) * 100;
+        const colorClass = count === 0 ? 'ch-green' : count <= 3 ? 'ch-green' : count <= 6 ? 'ch-yellow' : 'ch-red';
+        const isRec = recommended.includes(ch);
+        html += `<div class="ch-bar-row">
+            <span class="ch-label${isRec ? ' recommended' : ''}">${isRec ? '* ' : ''}Ch ${ch}</span>
+            <div class="ch-track"><div class="ch-fill ${colorClass}" style="width:${count > 0 ? Math.max(pct, 5) : 0}%;">${count > 0 ? count : ''}</div></div>
+            <span class="ch-count">${count}</span>
+        </div>`;
+    });
+
+    if (recommended.length) {
+        html += '<div style="font-size:0.75rem;color:#198754;margin-top:0.3rem;">* Recommended non-overlapping channels</div>';
+    }
+    container.innerHTML = html;
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,333 @@
+This capture utility should be kept as simple and straight forward as possible, and focus purely on easily doing Wi-Fi packet captures.
+
+There is some room for minimal extra features.
+
+There will be options to capture only specific types of traffic, like management, control, or data frames (or any combination of them).
+
+There can be some specific sub-types too, like beacons, association, probe, EAPOL. This can be very useful when trying to capture clients joining a network, without having to capture everything else in the air and creating excessively large capture files.
+
+
+--- PLANNED FEATURES ---
+
+
+1. CHANNEL ANALYSIS PAGE (from live scan data)
+
+Uses the existing /scan endpoint data to provide a complete RF environment overview.
+
+Channel congestion map:
+- Count how many APs are on each channel across 2.4 GHz, 5 GHz, and 6 GHz
+- Display as horizontal bar chart showing AP count per channel
+- Colour code: green (1-3 APs), yellow (4-6), red (7+)
+
+Adjacent channel interference detection (2.4 GHz):
+- Flag any AP operating on a non-standard channel (not 1, 6, or 11)
+- These cause overlapping interference with neighbouring channels
+- Display which channels are affected by each offending AP
+- Example: AP on channel 3 interferes with both channel 1 and channel 6 networks
+
+40 MHz channels in 2.4 GHz detection:
+- Flag APs using HT40 (40 MHz wide channels) in the 2.4 GHz band
+- In a congested environment this causes severe interference
+- Only 1 non-overlapping 40 MHz channel exists in 2.4 GHz
+- Detection: check HT Operation IE for secondary channel offset
+
+Channel utilisation:
+- Extract from BSS Load element in beacons (already parsed)
+- station_count: how many clients the AP reports
+- channel_utilisation: 0-255 value representing percentage of time the channel is busy
+- Display as percentage per AP and averaged per channel
+- Flag channels with utilisation > 60%
+
+Optimal channel recommendation:
+- Based on AP count, signal strengths, and utilisation per channel
+- Suggest the least congested channel for each band
+- For 2.4 GHz: recommend from 1, 6, 11 only
+- For 5 GHz: consider DFS channels as options if supported
+
+
+2. RETRY AND RETRANSMISSION ANALYSIS (from pcap)
+
+The retry rate is one of the single most diagnostic metrics in Wi-Fi troubleshooting. A high retry rate indicates interference, distance problems, hidden nodes, or rate mismatch.
+
+Extract retry flag:
+- tshark field: wlan.fc.retry
+- Every retransmitted frame has this bit set in the frame control field
+
+Per-client retry rate:
+- For each wireless client MAC address, count total frames and retry frames
+- Calculate: retry_rate = (retry_frames / total_frames) * 100
+- Flag clients with retry rate above 10% as problematic
+- Flag above 20% as critical
+
+Per-AP retry rate:
+- Same calculation grouped by BSSID
+- High AP retry rate suggests environmental issues affecting all clients on that AP
+
+Retry rate breakdown by frame type:
+- Separate retry rates for management, control, and data frames
+- High management frame retries: possible interference
+- High data frame retries: client distance or rate mismatch
+
+Per-client retry details:
+- Show which AP the client was associated with when retries occurred
+- Correlate with signal strength (RSSI from radiotap header)
+- Weak signal + high retries = distance or obstruction problem
+- Strong signal + high retries = interference or hidden node
+
+tshark extraction command:
+  tshark -r file.pcap -Y "wlan.fc.type == 2" -T fields -E separator=\t \
+    -e wlan.sa -e wlan.bssid -e wlan.fc.retry -e radiotap.dbm_antsignal
+
+Problem detection rules:
+- Client retry rate > 10%: "High retry rate on client {MAC} ({rate}%). Check distance or interference."
+- Client retry rate > 20%: "Critical retry rate on client {MAC} ({rate}%). Likely significant interference or very weak signal."
+- AP retry rate > 15%: "High retry rate on AP {BSSID} ({rate}%). Environmental issue affecting this AP's coverage area."
+
+
+3. ROAMING ANALYSIS (from pcap)
+
+Building on the existing client-to-AP association tracking to provide roaming quality metrics.
+
+Roaming timeline:
+- For each client that associated with multiple APs, build a timeline
+- Show: timestamp, AP name/BSSID, duration on each AP
+- Visualise as a horizontal bar chart or timeline
+
+Roaming duration measurement:
+- Gap between last frame on old AP and first frame on new AP
+- Under 50ms: excellent (fast transition / 802.11r)
+- 50-150ms: acceptable
+- 150-500ms: noticeable to voice/video
+- Over 500ms: problematic, will drop calls
+- Flag slow roams as problems
+
+Sticky client detection:
+- Client stays on a distant AP despite being closer to another
+- Detection: client signal strength (RSSI) below -75 dBm on current AP
+  while the same client is later seen on a closer AP with better signal
+- Flag as: "Client {MAC} stayed on {AP} at {RSSI} dBm for {duration} before roaming"
+
+Excessive roaming (ping-pong):
+- Client roams between the same two APs more than 3 times in 5 minutes
+- Indicates: APs at similar signal levels, client is on the boundary
+- Flag as: "Client {MAC} roaming excessively between {AP1} and {AP2}"
+
+802.11r (Fast Transition) detection:
+- Check if roaming used FT (802.11r) or full re-authentication
+- FT roam: auth frame with algorithm 2 (Fast BSS Transition)
+- Full roam: standard auth + association + EAPOL 4-way handshake
+- Report: "X of Y roams used Fast Transition (802.11r)"
+
+tshark fields for roaming:
+  wlan.sa, wlan.bssid, frame.time_epoch, radiotap.dbm_antsignal,
+  wlan.fc.type_subtype (filter for assoc req: 0x0000, reassoc req: 0x0002)
+
+
+4. CLIENT CAPABILITY REPORT (from pcap)
+
+Identify client device capabilities from their probe requests and association frames to find mismatches and legacy devices.
+
+Client Wi-Fi generation:
+- Parse HT Capabilities (802.11n), VHT Capabilities (802.11ac), HE Capabilities (802.11ax)
+  from probe requests and association request frames
+- Categorise each client: 11a/b/g, Wi-Fi 4 (n), Wi-Fi 5 (ac), Wi-Fi 6 (ax)
+- Report distribution: "45% Wi-Fi 6, 30% Wi-Fi 5, 20% Wi-Fi 4, 5% legacy"
+
+Supported bands:
+- From probe requests: which frequencies/channels the client probes for
+- Identify 2.4 GHz only clients (cannot use 5 GHz)
+- These are either legacy devices or IoT devices
+
+Legacy client identification:
+- Flag clients that only support 802.11b/g
+- These force the AP to use compatibility mechanisms that slow everyone down
+- Flag as: "Legacy 802.11b/g client {MAC} ({vendor}) detected. This client reduces performance for all other clients on the same AP."
+
+Capability mismatch detection:
+- Compare client capabilities with AP capabilities
+- Example: AP supports Wi-Fi 6 but client is Wi-Fi 4 — not a problem per se,
+  but if all clients are Wi-Fi 5+, legacy compatibility could be disabled
+- Report: "All detected clients support 802.11ac or newer. Consider disabling 802.11n compatibility."
+
+Spatial streams:
+- From HT/VHT/HE capabilities, determine supported spatial streams (1x1, 2x2, 3x3)
+- Helps identify low-end devices that may underperform
+
+tshark extraction:
+  tshark -r file.pcap -Y "wlan.fc.type_subtype == 0x0004 || wlan.fc.type_subtype == 0x0000" \
+    -T fields -E separator=\t \
+    -e wlan.sa -e wlan.ht.capabilities -e wlan.vht.capabilities \
+    -e wlan.ext.tag.number -e wlan.supported_rates
+
+
+5. SIGNAL STRENGTH ANALYSIS (from pcap)
+
+Radiotap headers contain RSSI (received signal strength) for every captured frame. This data is invaluable for coverage analysis.
+
+Signal per client:
+- For each client, extract RSSI from radiotap.dbm_antsignal
+- Calculate: min, max, average, standard deviation
+- High standard deviation suggests the client is moving or signal is unstable
+
+Signal distribution:
+- Histogram of signal strengths across all captured frames
+- Buckets: excellent (> -50), good (-50 to -65), fair (-65 to -75), weak (-75 to -85), very weak (< -85)
+- Shows overall coverage quality
+
+Weak client detection:
+- Clients with average RSSI below -75 dBm
+- These clients experience: lower data rates, more retries, more packet loss
+- Flag as: "Client {MAC} has weak signal (avg {RSSI} dBm). Check AP placement or client location."
+
+Signal vs retry correlation:
+- Cross-reference signal strength with retry rate per client
+- Expected: weak signal correlates with high retries
+- Unexpected: strong signal with high retries suggests interference (not distance)
+
+Coverage gap indicators:
+- If many clients on the same AP have weak signals, the AP may be poorly placed
+- Flag as: "{N} clients on AP {name} have signal below -75 dBm. Consider AP placement."
+
+tshark extraction:
+  tshark -r file.pcap -Y "wlan.fc.type == 2" -T fields -E separator=\t \
+    -e wlan.sa -e wlan.bssid -e radiotap.dbm_antsignal -e wlan.fc.retry
+
+
+6. AIRTIME ANALYSIS (from pcap)
+
+Airtime is the most important performance metric in Wi-Fi. A single slow client can consume more airtime than dozens of fast clients.
+
+Data rate distribution:
+- Extract radiotap.datarate or MCS index from each frame
+- Group by: legacy rates (1-54 Mbps), HT rates (MCS 0-31), VHT rates, HE rates
+- Show as histogram or pie chart
+- Flag if more than 20% of frames use rates below 24 Mbps
+
+Airtime estimation per client:
+- Airtime is approximately proportional to: frame_size / data_rate
+- For each client: sum(frame_size / data_rate) across all their frames
+- Normalise to percentage of total airtime
+- Identify "airtime hogs": clients consuming disproportionate airtime
+
+Management frame overhead:
+- Calculate percentage of all captured frames that are management frames
+- Beacons are the biggest contributor
+- With many SSIDs per AP, beacon overhead can exceed 20% of airtime
+- Flag if beacon overhead > 10% of total frames
+
+Probe request storm detection:
+- Count probe requests per client
+- Some clients (especially legacy) send excessive probe requests
+- Flag if a single client sends > 100 probe requests per minute
+
+Low data rate analysis:
+- Identify frames transmitted at rates below 24 Mbps
+- Group by client and AP
+- Clients using low rates:
+  - May be far away (check RSSI)
+  - May be legacy devices (check capabilities)
+  - May be experiencing interference (check retries)
+
+tshark extraction:
+  tshark -r file.pcap -T fields -E separator=\t \
+    -e wlan.sa -e wlan.bssid -e radiotap.datarate -e frame.len \
+    -e wlan.fc.type -e wlan.fc.type_subtype
+
+
+7. DHCP AND DNS ANALYSIS (from pcap)
+
+Network layer issues often manifest as Wi-Fi problems. Slow DHCP or DNS makes users think the Wi-Fi is broken.
+
+DHCP timing:
+- Extract DHCP Discover, Offer, Request, ACK timestamps
+- Calculate: time from Discover to ACK (DHCP transaction time)
+- Normal: under 1 second
+- Slow: 1-5 seconds
+- Problematic: over 5 seconds or timeouts (Discover with no Offer)
+- Flag: "DHCP transaction for client {MAC} took {time}s. Check DHCP server."
+
+DHCP failures:
+- Discover without Offer: DHCP server unreachable
+- Multiple Discovers: client retrying, server not responding
+- DHCP NAK: address conflict or configuration issue
+
+DNS timing:
+- Extract DNS query and response pairs
+- Calculate response time
+- Normal: under 50ms
+- Slow: 50-200ms
+- Problematic: over 200ms or timeouts
+- Flag slow DNS servers
+
+tshark extraction for DHCP:
+  tshark -r file.pcap -Y "dhcp" -T fields -E separator=\t \
+    -e frame.time_epoch -e eth.src -e dhcp.type -e dhcp.ip.your
+
+tshark extraction for DNS:
+  tshark -r file.pcap -Y "dns" -T fields -E separator=\t \
+    -e frame.time_epoch -e dns.id -e dns.flags.response -e dns.qry.name
+
+
+8. REPORTING AND EXPORT
+
+Generate a downloadable report summarising all findings.
+
+Report format:
+- HTML file that can be opened in any browser
+- Self-contained (inline CSS, no external dependencies)
+- Printable (print-friendly styles)
+
+Report sections:
+- Executive summary: total APs, clients, problems found, overall health score
+- Network inventory: all SSIDs, APs, channels, security
+- Problem list: all detected issues sorted by severity
+- Client inventory: all detected clients with capabilities
+- Recommendations: prioritised list of actions to improve the network
+
+Health score:
+- Calculate an overall score (0-100) based on:
+  - Security (WPA3 vs WPA2 vs WEP vs Open)
+  - PMF status
+  - Channel plan quality (1/6/11 compliance, no adjacent channel interference)
+  - Retry rate
+  - Client signal strengths
+  - Firmware age (from uptime)
+  - SSID count
+  - Roaming support (802.11k/r/v)
+  - Bit rate configuration (legacy rates disabled)
+- Weight each factor by impact
+- Display as a letter grade: A (90+), B (75-89), C (60-74), D (45-59), F (<45)
+
+
+--- IMPLEMENTATION STATUS ---
+
+ALL PLANNED FEATURES IMPLEMENTED (2026-04-02):
+
+  [DONE] Channel analysis page (channels.html)
+  [DONE] Retry and retransmission analysis (analyzer - Retries tab)
+  [DONE] Signal strength analysis (analyzer - Signal tab)
+  [DONE] Client capability report (analyzer - Clients tab)
+  [DONE] Roaming analysis (analyzer - Roaming tab)
+  [DONE] Airtime analysis (analyzer - Airtime tab)
+  [DONE] DHCP and DNS analysis (analyzer - DHCP/DNS tab)
+  [DONE] Reporting and export (HTML report with health score)
+
+ADDITIONAL FEATURES IMPLEMENTED BEYOND ORIGINAL PLAN:
+
+  [DONE] Health Score (A-F grade, 0-100 points)
+  [DONE] Floor plan heatmap site survey (survey.html)
+  [DONE] Capacity planning with airtime budget methodology (capacity.html)
+  [DONE] AP vendor model library - 55+ models, 12 vendors (ap_models.html)
+  [DONE] Navigation across all pages
+
+
+--- REMAINING IDEAS (NOT YET IMPLEMENTED) ---
+
+  - Predictive AP placement with AI-driven optimisation
+  - Spectrum analysis integration (HackRF/RF Explorer hardware)
+  - GPS outdoor survey mapping
+  - 2.4 GHz spectral scan via ath9k
+  - Wall/material attenuation modelling for predictive coverage
+  - 3D multi-floor survey support
+  - Kismet integration for real-time monitoring
+  - PCI DSS / HIPAA compliance report templates

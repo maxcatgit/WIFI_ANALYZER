@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AP Model Library</title>
+    <style>
+        body { font-family: sans-serif; background: #f8f9fa; padding: 1rem; margin: 0; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+        .header h1 { margin: 0; font-size: 1.4rem; }
+        .btn { padding: 0.5rem 1rem; border: none; border-radius: 0.25rem; cursor: pointer; font-size: 0.9rem; text-decoration: none; display: inline-block; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.85rem; }
+        .card { border: 1px solid #dee2e6; border-radius: 0.375rem; background: white; margin-bottom: 1rem; overflow: hidden; }
+        .card-header { background: #e9ecef; padding: 0.75rem; font-weight: bold; }
+        .card-body { padding: 1rem; }
+
+        .filters { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; margin-bottom: 1rem; }
+        .filters label { font-size: 0.85rem; font-weight: bold; display: block; margin-bottom: 0.2rem; }
+        .filters input, .filters select { padding: 0.4rem 0.6rem; border: 1px solid #ccc; border-radius: 0.25rem; font-size: 0.9rem; }
+        .filters input[type="text"] { min-width: 250px; }
+
+        .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.5rem; margin-bottom: 1rem; }
+        .summary-card { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.5rem; text-align: center; cursor: pointer; transition: all 0.15s; }
+        .summary-card:hover { background: #e8f0fe; border-color: #0d6efd; }
+        .summary-card.active { background: #0d6efd; color: white; border-color: #0d6efd; }
+        .summary-card .val { font-size: 1.2rem; font-weight: bold; }
+        .summary-card .lbl { font-size: 0.7rem; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+        th { background: #e9ecef; padding: 0.5rem; text-align: left; white-space: nowrap; cursor: pointer; user-select: none; position: sticky; top: 0; z-index: 1; }
+        th:hover { background: #d5d8db; }
+        td { padding: 0.5rem; border-top: 1px solid #eee; }
+        tr:hover { background: #f0f4ff; }
+
+        .gen-badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 0.2rem; font-size: 0.75rem; font-weight: bold; color: white; }
+        .gen-wifi7 { background: #6610f2; }
+        .gen-wifi6e { background: #0d6efd; }
+        .gen-wifi6 { background: #198754; }
+        .gen-wifi5 { background: #ffc107; color: #333; }
+        .gen-legacy { background: #6c757d; }
+
+        .band-badge { display: inline-block; padding: 0.1rem 0.35rem; border-radius: 0.15rem; font-size: 0.7rem; margin-right: 0.2rem; background: #e9ecef; }
+        .band-6 { background: #e8d4f8; color: #6610f2; }
+        .band-5 { background: #d4e8f8; color: #0d6efd; }
+        .band-24 { background: #d4f8e8; color: #198754; }
+
+        .detail-row { display: none; }
+        .detail-row.open { display: table-row; }
+        .detail-row td { background: #f8f9fa; padding: 0.75rem 1rem; }
+        .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.5rem; font-size: 0.82rem; }
+        .detail-item { padding: 0.3rem 0; }
+        .detail-item strong { display: block; color: #555; font-size: 0.75rem; }
+
+        .count-badge { background: #e9ecef; padding: 0.15rem 0.5rem; border-radius: 1rem; font-size: 0.8rem; margin-left: 0.3rem; }
+
+        @media (max-width: 600px) {
+            .header h1 { font-size: 1.2rem; }
+            table { font-size: 0.72rem; }
+            .filters input[type="text"] { min-width: 150px; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>AP Model Library</h1>
+        <div>
+            <a href="/survey" class="btn btn-secondary btn-sm">Site survey</a>
+            <a href="/capacity" class="btn btn-secondary btn-sm">Capacity planner</a>
+            <a href="/channels" class="btn btn-secondary btn-sm">Channel analysis</a>
+            <a href="/analyzer" class="btn btn-secondary btn-sm">Pcap analyser</a>
+            <a href="/networks" class="btn btn-secondary btn-sm">Network scanner</a>
+            <a href="/" class="btn btn-secondary btn-sm">Capture</a>
+        </div>
+    </div>
+
+    <div class="filters">
+        <div>
+            <label>Search</label>
+            <input type="text" id="search" placeholder="Model, vendor, feature..." oninput="filterModels()">
+        </div>
+        <div>
+            <label>Vendor</label>
+            <select id="vendor-filter" onchange="filterModels()">
+                <option value="">All vendors</option>
+            </select>
+        </div>
+        <div>
+            <label>Wi-Fi Generation</label>
+            <select id="gen-filter" onchange="filterModels()">
+                <option value="">All generations</option>
+                <option value="Wi-Fi 7">Wi-Fi 7</option>
+                <option value="Wi-Fi 6E">Wi-Fi 6E</option>
+                <option value="Wi-Fi 6">Wi-Fi 6</option>
+                <option value="Wi-Fi 5">Wi-Fi 5</option>
+            </select>
+        </div>
+        <div>
+            <label>Environment</label>
+            <select id="env-filter" onchange="filterModels()">
+                <option value="">All</option>
+                <option value="Indoor">Indoor</option>
+                <option value="Outdoor">Outdoor</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="summary-grid" id="gen-summary"></div>
+
+    <div class="card">
+        <div class="card-header">
+            AP Models <span class="count-badge" id="model-count">0</span>
+        </div>
+        <div style="overflow-x:auto;">
+            <table id="model-table">
+                <thead><tr>
+                    <th data-col="vendor">Vendor</th>
+                    <th data-col="model">Model</th>
+                    <th data-col="wifi_gen">Wi-Fi Gen</th>
+                    <th data-col="bands">Bands</th>
+                    <th data-col="spatial_streams">MIMO</th>
+                    <th data-col="max_data_rate">Max Rate</th>
+                    <th data-col="max_clients">Max Clients</th>
+                    <th data-col="tx_power_5">TX Power (5G)</th>
+                    <th data-col="antenna">Antenna</th>
+                    <th data-col="poe">PoE</th>
+                    <th data-col="indoor_outdoor">Env</th>
+                    <th data-col="release_year">Year</th>
+                </tr></thead>
+                <tbody id="model-body"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+const esc = s => { const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; };
+let allModels = [];
+let filteredModels = [];
+let sortCol = 'vendor';
+let sortAsc = true;
+let expandedModel = null;
+
+function genClass(gen) {
+    if (gen.includes('7')) return 'gen-wifi7';
+    if (gen.includes('6E')) return 'gen-wifi6e';
+    if (gen.includes('6')) return 'gen-wifi6';
+    if (gen.includes('5')) return 'gen-wifi5';
+    return 'gen-legacy';
+}
+
+function bandBadges(bands) {
+    return bands.split('/').map(b => {
+        const cls = b === '6' ? 'band-6' : b === '5' ? 'band-5' : 'band-24';
+        const label = b === '6' ? '6 GHz' : b === '5' ? '5 GHz' : '2.4 GHz';
+        return `<span class="band-badge ${cls}">${label}</span>`;
+    }).join('');
+}
+
+function loadModels() {
+    fetch('/api/ap-models')
+        .then(r => r.json())
+        .then(data => {
+            allModels = data.models;
+            const sel = document.getElementById('vendor-filter');
+            data.vendors.forEach(v => {
+                const opt = document.createElement('option');
+                opt.value = v; opt.textContent = v;
+                sel.appendChild(opt);
+            });
+            renderGenSummary(data.wifi_gen_summary);
+            filterModels();
+        });
+}
+
+function renderGenSummary(summary) {
+    const order = ['Wi-Fi 7', 'Wi-Fi 6E', 'Wi-Fi 6', 'Wi-Fi 5'];
+    const total = Object.values(summary).reduce((a, b) => a + b, 0);
+    let html = `<div class="summary-card" onclick="setGenFilter('')"><div class="val">${total}</div><div class="lbl">All Models</div></div>`;
+    order.forEach(g => {
+        if (summary[g]) {
+            html += `<div class="summary-card" onclick="setGenFilter('${g}')"><div class="val">${summary[g]}</div><div class="lbl">${g}</div></div>`;
+        }
+    });
+    document.getElementById('gen-summary').innerHTML = html;
+}
+
+function setGenFilter(gen) {
+    document.getElementById('gen-filter').value = gen;
+    filterModels();
+    document.querySelectorAll('.summary-card').forEach(c => c.classList.remove('active'));
+}
+
+function filterModels() {
+    const q = document.getElementById('search').value.toLowerCase();
+    const vendor = document.getElementById('vendor-filter').value;
+    const gen = document.getElementById('gen-filter').value;
+    const env = document.getElementById('env-filter').value;
+
+    filteredModels = allModels.filter(m => {
+        if (vendor && m.vendor !== vendor) return false;
+        if (gen && m.wifi_gen !== gen) return false;
+        if (env && m.indoor_outdoor !== env) return false;
+        if (q) {
+            const searchable = `${m.vendor} ${m.model} ${m.series} ${m.wifi_gen} ${m.standard} ${m.notes || ''}`.toLowerCase();
+            if (!searchable.includes(q)) return false;
+        }
+        return true;
+    });
+
+    document.getElementById('model-count').textContent = filteredModels.length;
+    sortAndRender();
+}
+
+function sortAndRender() {
+    const sorted = [...filteredModels].sort((a, b) => {
+        let va = a[sortCol], vb = b[sortCol];
+        if (typeof va === 'number' && typeof vb === 'number') {
+            return sortAsc ? va - vb : vb - va;
+        }
+        va = String(va || '').toLowerCase();
+        vb = String(vb || '').toLowerCase();
+        return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    });
+
+    const tbody = document.getElementById('model-body');
+    let html = '';
+    sorted.forEach((m, idx) => {
+        const isOpen = expandedModel === `${m.vendor}_${m.model}`;
+        html += `<tr style="cursor:pointer;" onclick="toggleDetail('${m.vendor}_${m.model}')">
+            <td><strong>${esc(m.vendor)}</strong></td>
+            <td>${esc(m.model)}</td>
+            <td><span class="gen-badge ${genClass(m.wifi_gen)}">${esc(m.wifi_gen)}</span></td>
+            <td>${bandBadges(m.bands)}</td>
+            <td>${esc(m.spatial_streams)}</td>
+            <td>${m.max_data_rate} Mbps</td>
+            <td>${m.max_clients}</td>
+            <td>${m.tx_power_5} dBm</td>
+            <td>${esc(m.antenna)}</td>
+            <td>${esc(m.poe)}</td>
+            <td>${esc(m.indoor_outdoor)}</td>
+            <td>${m.release_year}</td>
+        </tr>`;
+        if (isOpen) {
+            html += `<tr class="detail-row open"><td colspan="12">
+                <div class="detail-grid">
+                    <div class="detail-item"><strong>Series</strong>${esc(m.series)}</div>
+                    <div class="detail-item"><strong>Standard</strong>${esc(m.standard)}</div>
+                    <div class="detail-item"><strong>2.4 GHz TX Power</strong>${m.tx_power_24} dBm</div>
+                    <div class="detail-item"><strong>5 GHz TX Power</strong>${m.tx_power_5} dBm</div>
+                    <div class="detail-item"><strong>Max Data Rate</strong>${m.max_data_rate} Mbps</div>
+                    <div class="detail-item"><strong>Max Clients</strong>${m.max_clients}</div>
+                    <div class="detail-item"><strong>PoE Standard</strong>${esc(m.poe)}</div>
+                    <div class="detail-item"><strong>Release Year</strong>${m.release_year}</div>
+                    <div class="detail-item" style="grid-column:span 2;"><strong>Notes</strong>${esc(m.notes || 'N/A')}</div>
+                </div>
+            </td></tr>`;
+        }
+    });
+    tbody.innerHTML = html || '<tr><td colspan="12" style="text-align:center;padding:2rem;color:#999;">No models match your filters</td></tr>';
+}
+
+function toggleDetail(key) {
+    expandedModel = expandedModel === key ? null : key;
+    sortAndRender();
+}
+
+document.querySelectorAll('#model-table th').forEach(th => {
+    th.addEventListener('click', () => {
+        const col = th.dataset.col;
+        if (!col) return;
+        if (sortCol === col) { sortAsc = !sortAsc; }
+        else { sortCol = col; sortAsc = true; }
+        sortAndRender();
+    });
+});
+
+loadModels();
+</script>
+</body>
+</html>

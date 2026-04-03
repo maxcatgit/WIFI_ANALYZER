@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wi-Fi Pcap Analyser</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: sans-serif; background: #f8f9fa; padding: 1rem; margin: 0; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+        .header h1 { margin: 0; font-size: 1.4rem; }
+        .btn { padding: 0.5rem 1rem; border: none; border-radius: 0.25rem; cursor: pointer; font-size: 0.9rem; text-decoration: none; display: inline-block; }
+        .btn-primary { background: #0d6efd; color: white; }
+        .btn-primary:disabled { background: #6c9bd2; cursor: not-allowed; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.85rem; }
+        .btn-success { background: #198754; color: white; }
+        .card { border: 1px solid #dee2e6; border-radius: 0.375rem; background: white; margin-bottom: 1rem; overflow: hidden; }
+        .card-header { background: #e9ecef; padding: 0.75rem; font-weight: bold; }
+        .card-body { padding: 1rem; }
+
+        /* Upload area */
+        .drop-zone { border: 3px dashed #ccc; border-radius: 0.5rem; padding: 3rem 1rem; text-align: center; cursor: pointer; transition: all 0.2s; margin-bottom: 1rem; }
+        .drop-zone:hover, .drop-zone.drag-over { border-color: #0d6efd; background: #e8f0fe; }
+        .drop-zone input { display: none; }
+        .drop-zone p { margin: 0; color: #666; font-size: 1.1rem; }
+
+        /* Progress */
+        .progress-wrap { margin: 1rem 0; }
+        .progress-bar-bg { background: #e9ecef; border-radius: 0.25rem; height: 24px; overflow: hidden; }
+        .progress-bar { background: #0d6efd; height: 100%; transition: width 0.3s; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.8rem; font-weight: bold; }
+        .progress-text { margin-top: 0.3rem; font-size: 0.85rem; color: #555; }
+
+        /* SSID selector */
+        .selector { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: flex-end; margin-bottom: 1rem; }
+        .selector label { font-weight: bold; font-size: 0.9rem; }
+        .selector select { padding: 0.4rem; border: 1px solid #ccc; border-radius: 0.25rem; font-size: 0.9rem; min-width: 250px; }
+        .vendor-btns { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+        .vendor-btn { padding: 0.3rem 0.6rem; border: 1px solid #ccc; background: white; cursor: pointer; border-radius: 0.25rem; font-size: 0.8rem; }
+        .vendor-btn.active { background: #0d6efd; color: white; border-color: #0d6efd; }
+
+        /* Tabs */
+        .tabs { display: flex; gap: 0; border-bottom: 2px solid #dee2e6; margin-bottom: 1rem; flex-wrap: wrap; }
+        .tab-btn { padding: 0.5rem 1rem; border: none; background: none; cursor: pointer; font-size: 0.9rem; border-bottom: 3px solid transparent; margin-bottom: -2px; color: #666; }
+        .tab-btn.active { color: #0d6efd; border-bottom-color: #0d6efd; font-weight: bold; }
+        .tab-btn:hover { color: #333; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* Tables */
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        th { background: #e9ecef; padding: 0.5rem; text-align: left; white-space: nowrap; position: sticky; top: 0; }
+        td { padding: 0.5rem; border-top: 1px solid #eee; vertical-align: top; }
+        tr:hover { background: #f0f4ff; }
+
+        /* AP group styling */
+        .ap-header { background: #d4edda; cursor: pointer; }
+        .ap-header:hover { background: #c3e6cb; }
+        .ap-header td { font-weight: bold; padding: 0.6rem 0.5rem; }
+        .bssid-row td { padding-left: 2rem; font-size: 0.82rem; }
+        .radio-info { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.82rem; }
+        .radio-badge { padding: 0.15rem 0.4rem; border-radius: 0.2rem; background: #e9ecef; }
+
+        /* Problems */
+        .problem-card { padding: 0.75rem; margin-bottom: 0.5rem; border-radius: 0.25rem; border-left: 4px solid #ccc; background: white; }
+        .problem-card.sev-critical { border-left-color: #dc3545; background: #fff5f5; }
+        .problem-card.sev-high { border-left-color: #fd7e14; background: #fff8f0; }
+        .problem-card.sev-medium { border-left-color: #ffc107; background: #fffbf0; }
+        .problem-card.sev-low { border-left-color: #0dcaf0; background: #f0fbff; }
+        .problem-title { font-weight: bold; margin-bottom: 0.25rem; }
+        .sev-badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 0.2rem; font-size: 0.75rem; font-weight: bold; color: white; margin-right: 0.3rem; }
+        .sev-critical { background: #dc3545; }
+        .sev-high { background: #fd7e14; }
+        .sev-medium { background: #ffc107; color: #333; }
+        .sev-low { background: #0dcaf0; color: #333; }
+
+        /* Summary */
+        .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem; }
+        .summary-card { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.75rem; text-align: center; }
+        .summary-card .value { font-size: 1.5rem; font-weight: bold; color: #0d6efd; }
+        .summary-card .label { font-size: 0.8rem; color: #666; }
+
+        /* Misc */
+        .tag-ok { color: #198754; font-weight: bold; }
+        .tag-no { color: #dc3545; }
+        .mac-random { opacity: 0.6; font-style: italic; }
+        .copy-btn { padding: 0.2rem 0.5rem; font-size: 0.75rem; cursor: pointer; background: #e9ecef; border: 1px solid #ccc; border-radius: 0.2rem; }
+        .copy-btn:hover { background: #d5d8db; }
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #0d6efd; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .hidden { display: none !important; }
+        .power-range { font-size: 0.85rem; margin-bottom: 0.5rem; }
+        .ws-filter { font-family: monospace; font-size: 0.8rem; background: #f8f9fa; padding: 0.5rem; border-radius: 0.25rem; word-break: break-all; max-height: 80px; overflow-y: auto; border: 1px solid #dee2e6; }
+
+        /* Health score */
+        .health-badge { display: inline-block; width: 60px; height: 60px; border-radius: 50%; color: white; text-align: center; line-height: 60px; font-size: 1.8rem; font-weight: bold; }
+        .health-A { background: #198754; } .health-B { background: #0d6efd; } .health-C { background: #ffc107; color: #333; }
+        .health-D { background: #fd7e14; } .health-F { background: #dc3545; }
+
+        /* Bar chart */
+        .bar-chart { display: flex; flex-direction: column; gap: 0.3rem; margin: 0.5rem 0; }
+        .bar-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.82rem; }
+        .bar-label { min-width: 100px; text-align: right; }
+        .bar-track { flex: 1; background: #e9ecef; border-radius: 0.15rem; height: 20px; overflow: hidden; }
+        .bar-fill { height: 100%; border-radius: 0.15rem; display: flex; align-items: center; padding-left: 0.3rem; font-size: 0.75rem; color: white; font-weight: bold; min-width: fit-content; }
+        .bar-value { min-width: 50px; font-size: 0.82rem; }
+
+        /* Report button */
+        .btn-report { background: #6f42c1; color: white; }
+        .btn-report:hover { background: #5a32a3; }
+
+        /* Roaming timeline */
+        .timeline { position: relative; padding-left: 1.5rem; border-left: 2px solid #0d6efd; margin: 0.5rem 0; }
+        .timeline-event { position: relative; padding: 0.3rem 0 0.3rem 0.5rem; font-size: 0.82rem; }
+        .timeline-event::before { content: ''; position: absolute; left: -1.75rem; top: 0.5rem; width: 10px; height: 10px; border-radius: 50%; background: #0d6efd; }
+        .timeline-event.reassoc::before { background: #fd7e14; }
+
+        @media (max-width: 600px) {
+            .header h1 { font-size: 1.2rem; }
+            table { font-size: 0.75rem; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>Wi-Fi Pcap Analyser</h1>
+        <div>
+            <a href="/networks" class="btn btn-secondary btn-sm">Network scanner</a>
+            <a href="/channels" class="btn btn-secondary btn-sm">Channel analysis</a>
+            <a href="/survey" class="btn btn-secondary btn-sm">Site survey</a>
+            <a href="/capacity" class="btn btn-secondary btn-sm">Capacity planner</a>
+            <a href="/ap-models" class="btn btn-secondary btn-sm">AP models</a>
+            <a href="/files" class="btn btn-secondary btn-sm">Files</a>
+            <a href="/" class="btn btn-secondary btn-sm">Capture</a>
+        </div>
+    </div>
+
+    <!-- Upload Section -->
+    <div id="upload-section">
+        <div class="drop-zone" id="drop-zone">
+            <p>Drop a .pcap file here or click to select</p>
+            <input type="file" id="file-input" accept=".pcap,.pcapng">
+        </div>
+    </div>
+
+    <!-- Progress Section -->
+    <div id="progress-section" class="hidden">
+        <div class="card"><div class="card-body">
+            <div class="progress-wrap">
+                <div class="progress-bar-bg"><div class="progress-bar" id="pbar" style="width:0%">0%</div></div>
+                <div class="progress-text" id="ptext">Starting...</div>
+            </div>
+        </div></div>
+    </div>
+
+    <!-- SSID Selector -->
+    <div id="selector-section" class="hidden">
+        <div class="card"><div class="card-header">Analysis Results — <span id="file-info"></span></div>
+        <div class="card-body">
+            <div style="margin-bottom:0.5rem; font-size:0.9rem;">
+                <strong id="bssid-count"></strong> unique BSSIDs found.
+                <span id="hidden-info"></span>
+            </div>
+            <div class="selector">
+                <div>
+                    <label>Select SSID:</label><br>
+                    <select id="ssid-select"><option value="">-- Pick an SSID --</option></select>
+                </div>
+                <div>
+                    <label>AP Grouping:</label><br>
+                    <div class="vendor-btns">
+                        <button class="vendor-btn active" data-vendor="generic">Generic</button>
+                        <button class="vendor-btn" data-vendor="meraki">Meraki</button>
+                        <button class="vendor-btn" data-vendor="cisco">Cisco</button>
+                        <button class="vendor-btn" data-vendor="ubiquiti">Ubiquiti</button>
+                        <button class="vendor-btn" data-vendor="aruba">Aruba</button>
+                        <button class="vendor-btn" data-vendor="mist">Mist</button>
+                    </div>
+                </div>
+                <div>
+                    <br>
+                    <button class="btn btn-success" id="analyse-btn" onclick="runAnalysis()">Analyse</button>
+                </div>
+            </div>
+        </div></div>
+    </div>
+
+    <!-- Results Section -->
+    <div id="results-section" class="hidden">
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="summary">Summary</button>
+            <button class="tab-btn" data-tab="aps">Access Points</button>
+            <button class="tab-btn" data-tab="ssids">SSID Details</button>
+            <button class="tab-btn" data-tab="hosts">Host Details</button>
+            <button class="tab-btn" data-tab="retry">Retries</button>
+            <button class="tab-btn" data-tab="signal">Signal</button>
+            <button class="tab-btn" data-tab="caps">Clients</button>
+            <button class="tab-btn" data-tab="roaming">Roaming</button>
+            <button class="tab-btn" data-tab="airtime">Airtime</button>
+            <button class="tab-btn" data-tab="dhcpdns">DHCP/DNS</button>
+            <button class="tab-btn" data-tab="problems">Problems <span id="problem-count"></span></button>
+        </div>
+
+        <!-- Summary Tab -->
+        <div class="tab-content active" id="tab-summary">
+            <div class="summary-grid" id="summary-grid"></div>
+            <div id="power-ranges" style="margin-top:1rem;"></div>
+            <div style="margin-top:1rem;">
+                <strong>Wireshark display filter:</strong>
+                <button class="copy-btn" onclick="copyFilter()">Copy</button>
+                <div class="ws-filter" id="ws-filter"></div>
+            </div>
+        </div>
+
+        <!-- Access Points Tab -->
+        <div class="tab-content" id="tab-aps">
+            <div class="table-wrap"><table id="ap-table"><thead><tr>
+                <th>AP</th><th>Radios</th><th>Stations</th><th>SSIDs</th><th>BSSIDs</th>
+            </tr></thead><tbody id="ap-body"></tbody></table></div>
+        </div>
+
+        <!-- SSID Details Tab -->
+        <div class="tab-content" id="tab-ssids">
+            <div class="table-wrap"><table><thead><tr>
+                <th>SSID</th><th>BSSID</th><th>Band</th><th>Ch</th><th>Security</th>
+                <th>Wi-Fi Gen</th><th>Rates</th><th>11k</th><th>11r</th><th>11v</th>
+            </tr></thead><tbody id="ssid-body"></tbody></table></div>
+        </div>
+
+        <!-- Host Details Tab -->
+        <div class="tab-content" id="tab-hosts">
+            <h3 style="margin:0 0 0.5rem;">Wireless Clients</h3>
+            <div class="table-wrap"><table><thead><tr>
+                <th>MAC</th><th>Vendor</th><th>SSID</th><th>BSSID (AP)</th><th>Frames</th><th>Username</th><th>Roaming</th>
+            </tr></thead><tbody id="client-body"></tbody></table></div>
+            <h3 style="margin:1rem 0 0.5rem;">Wired Hosts</h3>
+            <div class="table-wrap"><table><thead><tr>
+                <th>MAC</th><th>Vendor</th><th>Seen via BSSIDs</th>
+            </tr></thead><tbody id="wired-body"></tbody></table></div>
+        </div>
+
+        <!-- Retry Analysis Tab -->
+        <div class="tab-content" id="tab-retry">
+            <h3 style="margin:0 0 0.5rem;">Per-Client Retry Rates</h3>
+            <div class="table-wrap"><table><thead><tr>
+                <th>Client MAC</th><th>Vendor</th><th>BSSID</th><th>Total Frames</th><th>Retry Frames</th><th>Retry Rate</th><th>Avg RSSI</th>
+            </tr></thead><tbody id="retry-client-body"></tbody></table></div>
+            <h3 style="margin:1rem 0 0.5rem;">Per-AP Retry Rates</h3>
+            <div class="table-wrap"><table><thead><tr>
+                <th>BSSID</th><th>SSID</th><th>Total Frames</th><th>Retry Frames</th><th>Retry Rate</th>
+            </tr></thead><tbody id="retry-ap-body"></tbody></table></div>
+        </div>
+
+        <!-- Signal Strength Tab -->
+        <div class="tab-content" id="tab-signal">
+            <h3 style="margin:0 0 0.5rem;">Signal Distribution</h3>
+            <div id="signal-dist"></div>
+            <h3 style="margin:1rem 0 0.5rem;">Per-Client Signal Strength</h3>
+            <div class="table-wrap"><table><thead><tr>
+                <th>Client MAC</th><th>Vendor</th><th>BSSID</th><th>Avg RSSI</th><th>Min</th><th>Max</th><th>Std Dev</th><th>Samples</th>
+            </tr></thead><tbody id="signal-client-body"></tbody></table></div>
+        </div>
+
+        <!-- Client Capabilities Tab -->
+        <div class="tab-content" id="tab-caps">
+            <h3 style="margin:0 0 0.5rem;">Client Wi-Fi Generation Distribution</h3>
+            <div id="caps-dist"></div>
+            <h3 style="margin:1rem 0 0.5rem;">Client Capabilities</h3>
+            <div class="table-wrap"><table><thead><tr>
+                <th>Client MAC</th><th>Vendor</th><th>Wi-Fi Gen</th><th>HT (n)</th><th>VHT (ac)</th><th>HE (ax)</th><th>Bands</th>
+            </tr></thead><tbody id="caps-client-body"></tbody></table></div>
+        </div>
+
+        <!-- Roaming Analysis Tab -->
+        <div class="tab-content" id="tab-roaming">
+            <div id="roaming-summary"></div>
+            <h3 style="margin:1rem 0 0.5rem;">Roaming Events</h3>
+            <div id="roaming-details"></div>
+            <div id="roaming-issues"></div>
+        </div>
+
+        <!-- Airtime Analysis Tab -->
+        <div class="tab-content" id="tab-airtime">
+            <h3 style="margin:0 0 0.5rem;">Data Rate Distribution</h3>
+            <div id="airtime-rates"></div>
+            <div id="airtime-overhead" style="margin:1rem 0;"></div>
+            <h3 style="margin:1rem 0 0.5rem;">Airtime Per Client</h3>
+            <div class="table-wrap"><table><thead><tr>
+                <th>Client MAC</th><th>Vendor</th><th>BSSID</th><th>Airtime %</th><th>Frames</th><th>Low Rate Frames</th><th>Low Rate %</th>
+            </tr></thead><tbody id="airtime-client-body"></tbody></table></div>
+            <div id="probe-storms"></div>
+        </div>
+
+        <!-- DHCP/DNS Tab -->
+        <div class="tab-content" id="tab-dhcpdns">
+            <h3 style="margin:0 0 0.5rem;">DHCP Transactions</h3>
+            <div class="table-wrap"><table><thead><tr>
+                <th>Client MAC</th><th>IP Assigned</th><th>Server</th><th>Transaction Time</th><th>Status</th><th>Discovers</th><th>NAKs</th>
+            </tr></thead><tbody id="dhcp-body"></tbody></table></div>
+            <h3 style="margin:1rem 0 0.5rem;">DNS Server Performance</h3>
+            <div class="table-wrap"><table><thead><tr>
+                <th>Server</th><th>Queries</th><th>Avg Latency</th><th>Max Latency</th><th>Timeouts</th>
+            </tr></thead><tbody id="dns-body"></tbody></table></div>
+        </div>
+
+        <!-- Problems Tab -->
+        <div class="tab-content" id="tab-problems">
+            <div id="problems-list"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+let sessionId = null;
+let pollTimer = null;
+let analysisData = null;
+let selectedVendor = 'generic';
+let expandedAPs = new Set();
+
+const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+
+// Upload handling
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files.length) uploadFile(fileInput.files[0]); });
+
+function uploadFile(file) {
+    if (!file.name.endsWith('.pcap') && !file.name.endsWith('.pcapng')) {
+        alert('Please select a .pcap or .pcapng file');
+        return;
+    }
+    document.getElementById('upload-section').classList.add('hidden');
+    document.getElementById('progress-section').classList.remove('hidden');
+    document.getElementById('selector-section').classList.add('hidden');
+    document.getElementById('results-section').classList.add('hidden');
+
+    const fd = new FormData();
+    fd.append('file', file);
+
+    fetch('/analyzer/upload', { method: 'POST', body: fd })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) { alert(data.error); resetUpload(); return; }
+            sessionId = data.session_id;
+            pollTimer = setInterval(pollStatus, 2000);
+        })
+        .catch(() => { alert('Upload failed'); resetUpload(); });
+}
+
+function pollStatus() {
+    fetch(`/analyzer/status/${sessionId}`)
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('pbar').style.width = data.progress_pct + '%';
+            document.getElementById('pbar').textContent = data.progress_pct + '%';
+            document.getElementById('ptext').textContent = data.progress;
+
+            if (data.status === 'ready') {
+                clearInterval(pollTimer);
+                showSelector(data);
+            } else if (data.status === 'error') {
+                clearInterval(pollTimer);
+                document.getElementById('ptext').textContent = 'Error: ' + data.progress;
+            }
+        });
+}
+
+function showSelector(data) {
+    document.getElementById('progress-section').classList.add('hidden');
+    document.getElementById('selector-section').classList.remove('hidden');
+    document.getElementById('file-info').textContent = `${data.filename} (${data.file_size_mb} MB)`;
+    document.getElementById('bssid-count').textContent = data.total_bssids;
+    document.getElementById('hidden-info').textContent = data.hidden_count > 0
+        ? `${data.hidden_count} hidden SSIDs deanonymised.` : '';
+
+    const sel = document.getElementById('ssid-select');
+    sel.innerHTML = '<option value="">-- Pick an SSID --</option>';
+    data.ssid_list.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s; opt.textContent = s;
+        sel.appendChild(opt);
+    });
+}
+
+function resetUpload() {
+    document.getElementById('upload-section').classList.remove('hidden');
+    document.getElementById('progress-section').classList.add('hidden');
+}
+
+// Vendor buttons
+document.querySelectorAll('.vendor-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.vendor-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        selectedVendor = btn.dataset.vendor;
+    });
+});
+
+// Tab switching
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    });
+});
+
+function runAnalysis() {
+    const ssid = document.getElementById('ssid-select').value;
+    if (!ssid) { alert('Please select an SSID'); return; }
+    const btn = document.getElementById('analyse-btn');
+    btn.disabled = true; btn.textContent = 'Analysing...';
+
+    fetch('/analyzer/analyze', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ session_id: sessionId, ssid, vendor: selectedVendor })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) { alert(data.error); return; }
+        analysisData = data;
+        expandedAPs.clear();
+        renderResults();
+        document.getElementById('results-section').classList.remove('hidden');
+    })
+    .catch(e => alert('Analysis failed: ' + e.message))
+    .finally(() => { btn.disabled = false; btn.textContent = 'Analyse'; });
+}
+
+function renderResults() {
+    renderSummary();
+    renderAPs();
+    renderSSIDDetails();
+    renderHosts();
+    renderRetry();
+    renderSignal();
+    renderCaps();
+    renderRoaming();
+    renderAirtime();
+    renderDhcpDns();
+    renderProblems();
+}
+
+function renderSummary() {
+    const s = analysisData.summary;
+    const grade = s.health_grade || '?';
+    const score = s.health_score || 0;
+    document.getElementById('summary-grid').innerHTML = `
+        <div class="summary-card"><div class="health-badge health-${grade}">${grade}</div><div class="label">Health ${score}/100</div></div>
+        <div class="summary-card"><div class="value">${s.total_aps}</div><div class="label">Access Points</div></div>
+        <div class="summary-card"><div class="value">${s.total_bssids}</div><div class="label">BSSIDs</div></div>
+        <div class="summary-card"><div class="value">${s.total_clients}</div><div class="label">Clients</div></div>
+        <div class="summary-card"><div class="value">${s.total_ssids}</div><div class="label">SSIDs on APs</div></div>
+        <div class="summary-card"><div class="value">${esc(s.vendor_name)}</div><div class="label">AP Grouping</div></div>
+        <div class="summary-card"><div class="value">${analysisData.problems.length}</div><div class="label">Problems</div></div>
+        <div class="summary-card" style="cursor:pointer;" onclick="downloadReport()"><div class="value" style="font-size:1.2rem;">&#128196;</div><div class="label">Download Report</div></div>
+    `;
+
+    let prHtml = '';
+    const pr = analysisData.power_ranges;
+    for (const band of ['2.4 GHz', '5 GHz', '6 GHz']) {
+        if (pr[band]) prHtml += `<div class="power-range"><strong>${band}:</strong> ${pr[band].min} - ${pr[band].max} dBm</div>`;
+    }
+    document.getElementById('power-ranges').innerHTML = prHtml ? '<strong>TX Power Ranges:</strong>' + prHtml : '';
+    document.getElementById('ws-filter').textContent = analysisData.wireshark_filter;
+}
+
+function renderAPs() {
+    const tbody = document.getElementById('ap-body');
+    let html = '';
+    analysisData.ap_groups.forEach((ap, idx) => {
+        const expanded = expandedAPs.has(idx);
+        const radioHtml = Object.entries(ap.radios).map(([band, r]) =>
+            `<span class="radio-badge">${band}: Ch ${r.channel}${r.tx_powers && r.tx_powers.length ? ' (' + r.tx_powers[0] + ' dBm)' : ''}</span>`
+        ).join(' ');
+
+        html += `<tr class="ap-header" onclick="toggleAP(${idx})">
+            <td>${expanded ? '&#9660;' : '&#9654;'} ${esc(ap.name)}</td>
+            <td><div class="radio-info">${radioHtml || 'N/A'}</div></td>
+            <td>${ap.total_stations}</td>
+            <td>${ap.ssids_on_ap.map(s => esc(s)).join(', ')}</td>
+            <td>${ap.bssids.length}</td>
+        </tr>`;
+
+        if (expanded) {
+            ap.bssids.forEach(b => {
+                html += `<tr class="bssid-row">
+                    <td>${esc(b.bssid)}</td>
+                    <td>${esc(b.ssid)} | ${esc(b.band)} Ch ${esc(b.channel)}</td>
+                    <td>${b.station_count}</td>
+                    <td>${esc(b.wifi_gen)} | ${esc(b.security)}</td>
+                    <td>Uptime: ${esc(b.uptime) || 'N/A'}</td>
+                </tr>`;
+            });
+        }
+    });
+    tbody.innerHTML = html || '<tr><td colspan="5">No APs found</td></tr>';
+}
+
+function toggleAP(idx) {
+    if (expandedAPs.has(idx)) expandedAPs.delete(idx);
+    else expandedAPs.add(idx);
+    renderAPs();
+}
+
+function renderSSIDDetails() {
+    const tbody = document.getElementById('ssid-body');
+    const seen = new Set();
+    let html = '';
+    analysisData.ap_groups.forEach(ap => {
+        ap.bssids.forEach(b => {
+            const key = b.bssid + b.ssid;
+            if (seen.has(key)) return;
+            seen.add(key);
+            html += `<tr>
+                <td>${esc(b.ssid)}</td>
+                <td>${esc(b.bssid)}</td>
+                <td>${esc(b.band)}</td>
+                <td>${esc(b.channel)}</td>
+                <td>${esc(b.security)}</td>
+                <td>${esc(b.wifi_gen)}</td>
+                <td style="font-size:0.78rem;white-space:normal;max-width:200px;">${esc(b.rates)}${b.ext_rates ? ', ' + esc(b.ext_rates) : ''}</td>
+                <td class="${b.has_11k ? 'tag-ok' : 'tag-no'}">${b.has_11k ? 'Yes' : 'No'}</td>
+                <td class="${b.has_11r ? 'tag-ok' : 'tag-no'}">${b.has_11r ? 'Yes' : 'No'}</td>
+                <td class="${b.has_11v ? 'tag-ok' : 'tag-no'}">${b.has_11v ? 'Yes' : 'No'}</td>
+            </tr>`;
+        });
+    });
+    tbody.innerHTML = html || '<tr><td colspan="10">No details</td></tr>';
+}
+
+function renderHosts() {
+    // Wireless clients
+    const cbody = document.getElementById('client-body');
+    const clients = analysisData.clients.sort((a, b) => b.frames - a.frames);
+    let chtml = '';
+    clients.forEach(c => {
+        const macClass = c.randomised ? ' class="mac-random"' : '';
+        const roamInfo = analysisData.roaming[c.mac];
+        const roamText = roamInfo ? `${roamInfo.length} APs` : '-';
+        chtml += `<tr>
+            <td${macClass}>${esc(c.mac)}${c.randomised ? ' (R)' : ''}</td>
+            <td>${esc(c.vendor)}</td>
+            <td>${esc(c.ssid)}</td>
+            <td>${esc(c.bssid)}</td>
+            <td>${c.frames}</td>
+            <td>${c.username ? '<strong>' + esc(c.username) + '</strong>' : ''}</td>
+            <td>${roamText}</td>
+        </tr>`;
+    });
+    cbody.innerHTML = chtml || '<tr><td colspan="7">No clients found</td></tr>';
+
+    // Wired hosts
+    const wbody = document.getElementById('wired-body');
+    let whtml = '';
+    analysisData.wired_hosts.forEach(w => {
+        whtml += `<tr>
+            <td><a href="https://duckduckgo.com/?q=${encodeURIComponent(w.vendor + ' ' + w.mac.substring(0,8))}" target="_blank">${esc(w.mac)}</a></td>
+            <td>${esc(w.vendor)}</td>
+            <td>${w.via.map(b => esc(b)).join(', ')}</td>
+        </tr>`;
+    });
+    wbody.innerHTML = whtml || '<tr><td colspan="3">No wired hosts detected</td></tr>';
+}
+
+function renderProblems() {
+    const list = document.getElementById('problems-list');
+    const problems = analysisData.problems;
+    document.getElementById('problem-count').textContent = problems.length ? `(${problems.length})` : '';
+
+    if (problems.length === 0) {
+        list.innerHTML = '<div class="problem-card" style="text-align:center;color:#198754;font-weight:bold;">No problems detected</div>';
+        return;
+    }
+
+    list.innerHTML = problems.map(p => `
+        <div class="problem-card sev-${p.severity}">
+            <div class="problem-title"><span class="sev-badge sev-${p.severity}">${p.severity.toUpperCase()}</span>${esc(p.title)}</div>
+            <div style="font-size:0.85rem;color:#555;">${esc(p.description)}</div>
+        </div>
+    `).join('');
+}
+
+function copyFilter() {
+    navigator.clipboard.writeText(analysisData.wireshark_filter).then(() => {
+        const btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = 'Copy', 2000);
+    });
+}
+
+function retryColor(rate) {
+    if (rate > 20) return '#dc3545';
+    if (rate > 10) return '#fd7e14';
+    if (rate > 5) return '#ffc107';
+    return '#198754';
+}
+
+function rssiColor(rssi) {
+    if (rssi > -50) return '#198754';
+    if (rssi > -65) return '#7bc67e';
+    if (rssi > -75) return '#ffc107';
+    if (rssi > -85) return '#fd7e14';
+    return '#dc3545';
+}
+
+function barHtml(label, value, max, color, suffix) {
+    const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+    return `<div class="bar-row"><span class="bar-label">${esc(label)}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.max(pct, 2)}%;background:${color};">${pct > 15 ? value + suffix : ''}</div></div><span class="bar-value">${value}${suffix}</span></div>`;
+}
+
+function renderRetry() {
+    const r = analysisData.retry_analysis;
+    if (!r) return;
+
+    const cbody = document.getElementById('retry-client-body');
+    let html = '';
+    r.clients.forEach(c => {
+        const color = retryColor(c.retry_rate);
+        html += `<tr><td>${esc(c.mac)}</td><td>${esc(c.vendor)}</td><td>${esc(c.bssid)}</td>
+            <td>${c.total_frames}</td><td>${c.retry_frames}</td>
+            <td style="color:${color};font-weight:bold;">${c.retry_rate}%</td>
+            <td>${c.avg_rssi !== null ? c.avg_rssi + ' dBm' : 'N/A'}</td></tr>`;
+    });
+    cbody.innerHTML = html || '<tr><td colspan="7">No retry data</td></tr>';
+
+    const abody = document.getElementById('retry-ap-body');
+    let ahtml = '';
+    r.aps.forEach(a => {
+        const color = retryColor(a.retry_rate);
+        ahtml += `<tr><td>${esc(a.bssid)}</td><td>${esc(a.ssid)}</td>
+            <td>${a.total_frames}</td><td>${a.retry_frames}</td>
+            <td style="color:${color};font-weight:bold;">${a.retry_rate}%</td></tr>`;
+    });
+    abody.innerHTML = ahtml || '<tr><td colspan="5">No AP retry data</td></tr>';
+}
+
+function renderSignal() {
+    const s = analysisData.signal_analysis;
+    if (!s) return;
+
+    const d = s.distribution;
+    const total = s.total_samples || 1;
+    const distDiv = document.getElementById('signal-dist');
+    distDiv.innerHTML = '<div class="bar-chart">'
+        + barHtml('Excellent (> -50)', d.excellent, total, '#198754', '')
+        + barHtml('Good (-50 to -65)', d.good, total, '#7bc67e', '')
+        + barHtml('Fair (-65 to -75)', d.fair, total, '#ffc107', '')
+        + barHtml('Weak (-75 to -85)', d.weak, total, '#fd7e14', '')
+        + barHtml('Very Weak (< -85)', d.very_weak, total, '#dc3545', '')
+        + '</div><div style="font-size:0.82rem;color:#666;margin-top:0.3rem;">'
+        + `Total samples: ${s.total_samples}</div>`;
+
+    const cbody = document.getElementById('signal-client-body');
+    let html = '';
+    s.clients.forEach(c => {
+        const color = rssiColor(c.avg_rssi);
+        html += `<tr><td>${esc(c.mac)}</td><td>${esc(c.vendor)}</td><td>${esc(c.bssid)}</td>
+            <td style="color:${color};font-weight:bold;">${c.avg_rssi} dBm</td>
+            <td>${c.min_rssi}</td><td>${c.max_rssi}</td><td>${c.std_rssi}</td><td>${c.samples}</td></tr>`;
+    });
+    cbody.innerHTML = html || '<tr><td colspan="8">No signal data</td></tr>';
+}
+
+function renderCaps() {
+    const c = analysisData.client_capabilities;
+    if (!c) return;
+
+    const s = c.summary;
+    const total = (s.wifi6 + s.wifi5 + s.wifi4 + s.legacy) || 1;
+    const distDiv = document.getElementById('caps-dist');
+    distDiv.innerHTML = '<div class="bar-chart">'
+        + barHtml('Wi-Fi 6 (ax)', s.wifi6, total, '#6610f2', '')
+        + barHtml('Wi-Fi 5 (ac)', s.wifi5, total, '#0d6efd', '')
+        + barHtml('Wi-Fi 4 (n)', s.wifi4, total, '#198754', '')
+        + barHtml('Legacy (a/b/g)', s.legacy, total, '#dc3545', '')
+        + '</div><div style="font-size:0.82rem;color:#666;margin-top:0.3rem;">'
+        + `Dual-band: ${s.dual_band} | 2.4 GHz only: ${s.single_band}</div>`;
+
+    const tbody = document.getElementById('caps-client-body');
+    let html = '';
+    c.clients.forEach(cl => {
+        html += `<tr><td>${esc(cl.mac)}</td><td>${esc(cl.vendor)}</td><td>${esc(cl.wifi_gen)}</td>
+            <td class="${cl.has_ht ? 'tag-ok' : 'tag-no'}">${cl.has_ht ? 'Yes' : 'No'}</td>
+            <td class="${cl.has_vht ? 'tag-ok' : 'tag-no'}">${cl.has_vht ? 'Yes' : 'No'}</td>
+            <td class="${cl.has_he ? 'tag-ok' : 'tag-no'}">${cl.has_he ? 'Yes' : 'No'}</td>
+            <td>${cl.bands.join(', ') || 'Unknown'}</td></tr>`;
+    });
+    tbody.innerHTML = html || '<tr><td colspan="7">No capability data</td></tr>';
+}
+
+function renderRoaming() {
+    const r = analysisData.roaming_analysis;
+    if (!r) return;
+
+    document.getElementById('roaming-summary').innerHTML = `
+        <div class="summary-grid">
+            <div class="summary-card"><div class="value">${r.total_roaming_clients}</div><div class="label">Roaming Clients</div></div>
+            <div class="summary-card"><div class="value">${r.total_roams}</div><div class="label">Total Roams</div></div>
+            <div class="summary-card"><div class="value">${r.ft_roams}</div><div class="label">Fast Transition (11r)</div></div>
+            <div class="summary-card"><div class="value">${r.sticky_clients.length}</div><div class="label">Sticky Clients</div></div>
+            <div class="summary-card"><div class="value">${r.pingpong_clients.length}</div><div class="label">Ping-Pong</div></div>
+        </div>`;
+
+    const detDiv = document.getElementById('roaming-details');
+    let html = '';
+    r.details.forEach(d => {
+        html += `<div class="card" style="margin-bottom:0.5rem;"><div class="card-header" style="font-size:0.85rem;">${esc(d.mac)} (${esc(d.vendor)}) - ${d.events.length} event(s)</div><div class="card-body" style="padding:0.5rem;"><div class="timeline">`;
+        d.events.forEach(e => {
+            const cls = e.is_reassoc ? ' reassoc' : '';
+            const roamTime = e.roam_time_ms !== undefined ? ` <strong style="color:${e.roam_time_ms > 500 ? '#dc3545' : e.roam_time_ms > 150 ? '#fd7e14' : '#198754'};">(${e.roam_time_ms} ms)</strong>` : '';
+            const ft = e.used_ft ? ' <span style="color:#6610f2;font-weight:bold;">[FT]</span>' : '';
+            html += `<div class="timeline-event${cls}">${esc(e.ssid || '')} on <strong>${esc(e.bssid)}</strong>${e.rssi !== null ? ' @ ' + e.rssi + ' dBm' : ''}${roamTime}${ft}${e.is_reassoc ? ' (reassoc)' : ' (assoc)'}</div>`;
+        });
+        html += '</div></div></div>';
+    });
+    detDiv.innerHTML = html || '<p>No roaming events detected.</p>';
+
+    let issues = '';
+    if (r.sticky_clients.length) {
+        issues += '<h3 style="margin:1rem 0 0.5rem;">Sticky Clients</h3><div class="table-wrap"><table><thead><tr><th>Client</th><th>BSSID</th><th>SSID</th><th>RSSI</th></tr></thead><tbody>';
+        r.sticky_clients.forEach(s => {
+            issues += `<tr><td>${esc(s.mac)}</td><td>${esc(s.bssid)}</td><td>${esc(s.ssid)}</td><td style="color:${rssiColor(s.rssi)};">${s.rssi} dBm</td></tr>`;
+        });
+        issues += '</tbody></table></div>';
+    }
+    if (r.pingpong_clients.length) {
+        issues += '<h3 style="margin:1rem 0 0.5rem;">Ping-Pong Roaming</h3><div class="table-wrap"><table><thead><tr><th>Client</th><th>AP 1</th><th>AP 2</th><th>Transitions</th></tr></thead><tbody>';
+        r.pingpong_clients.forEach(p => {
+            issues += `<tr><td>${esc(p.mac)}</td><td>${esc(p.ap1)}</td><td>${esc(p.ap2)}</td><td>${p.transitions}</td></tr>`;
+        });
+        issues += '</tbody></table></div>';
+    }
+    document.getElementById('roaming-issues').innerHTML = issues;
+}
+
+function renderAirtime() {
+    const a = analysisData.airtime_analysis;
+    if (!a) return;
+
+    const rd = a.rate_distribution;
+    const total = a.total_rates || 1;
+    document.getElementById('airtime-rates').innerHTML = '<div class="bar-chart">'
+        + barHtml('Legacy (1-54 Mbps)', rd.legacy, total, '#dc3545', '')
+        + barHtml('HT (MCS, to 300)', rd.ht, total, '#ffc107', '')
+        + barHtml('VHT (to 1733)', rd.vht, total, '#0d6efd', '')
+        + barHtml('HE (802.11ax)', rd.he, total, '#6610f2', '')
+        + '</div>';
+
+    document.getElementById('airtime-overhead').innerHTML = `
+        <div class="summary-grid">
+            <div class="summary-card"><div class="value">${a.mgt_overhead_pct}%</div><div class="label">Management Overhead</div></div>
+            <div class="summary-card"><div class="value">${a.beacon_pct}%</div><div class="label">Beacon Overhead</div></div>
+        </div>`;
+
+    const tbody = document.getElementById('airtime-client-body');
+    let html = '';
+    a.clients.forEach(c => {
+        const color = c.airtime_pct > 30 ? '#dc3545' : c.airtime_pct > 15 ? '#fd7e14' : '#333';
+        html += `<tr><td>${esc(c.mac)}</td><td>${esc(c.vendor)}</td><td>${esc(c.bssid)}</td>
+            <td style="color:${color};font-weight:bold;">${c.airtime_pct}%</td>
+            <td>${c.frames}</td><td>${c.low_rate_frames}</td><td>${c.low_rate_pct}%</td></tr>`;
+    });
+    tbody.innerHTML = html || '<tr><td colspan="7">No airtime data</td></tr>';
+
+    let psHtml = '';
+    if (a.probe_storms && a.probe_storms.length) {
+        psHtml = '<h3 style="margin:1rem 0 0.5rem;">Probe Request Storms</h3><div class="table-wrap"><table><thead><tr><th>Client</th><th>Count</th><th>Rate (/min)</th></tr></thead><tbody>';
+        a.probe_storms.forEach(p => {
+            psHtml += `<tr><td>${esc(p.mac)}</td><td>${p.count}</td><td>${p.per_min}</td></tr>`;
+        });
+        psHtml += '</tbody></table></div>';
+    }
+    document.getElementById('probe-storms').innerHTML = psHtml;
+}
+
+function renderDhcpDns() {
+    const dd = analysisData.dhcp_dns_analysis;
+    if (!dd) return;
+
+    const dbody = document.getElementById('dhcp-body');
+    let html = '';
+    dd.dhcp.forEach(d => {
+        const tColor = d.transaction_time === null ? '#dc3545' : d.transaction_time > 5 ? '#dc3545' : d.transaction_time > 1 ? '#fd7e14' : '#198754';
+        const tText = d.transaction_time !== null ? d.transaction_time.toFixed(3) + 's' : 'N/A';
+        const sColor = d.status === 'completed' ? '#198754' : '#dc3545';
+        html += `<tr><td>${esc(d.mac)}</td><td>${esc(d.ip)}</td><td>${esc(d.server)}</td>
+            <td style="color:${tColor};font-weight:bold;">${tText}</td>
+            <td style="color:${sColor};">${esc(d.status)}</td>
+            <td>${d.discovers}</td><td>${d.naks}</td></tr>`;
+    });
+    dbody.innerHTML = html || '<tr><td colspan="7">No DHCP transactions</td></tr>';
+
+    const dnsbody = document.getElementById('dns-body');
+    let dhtml = '';
+    dd.dns_servers.forEach(d => {
+        const lColor = d.avg_latency_ms === null ? '#999' : d.avg_latency_ms > 200 ? '#dc3545' : d.avg_latency_ms > 50 ? '#fd7e14' : '#198754';
+        dhtml += `<tr><td>${esc(d.server)}</td><td>${d.queries}</td>
+            <td style="color:${lColor};font-weight:bold;">${d.avg_latency_ms !== null ? d.avg_latency_ms + ' ms' : 'N/A'}</td>
+            <td>${d.max_latency_ms !== null ? d.max_latency_ms + ' ms' : 'N/A'}</td>
+            <td style="color:${d.timeouts > 0 ? '#dc3545' : '#333'};">${d.timeouts}</td></tr>`;
+    });
+    dnsbody.innerHTML = dhtml || '<tr><td colspan="5">No DNS data</td></tr>';
+}
+
+function downloadReport() {
+    const ssid = document.getElementById('ssid-select').value;
+    if (!ssid || !sessionId) { alert('No analysis to report'); return; }
+    fetch('/analyzer/report', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ session_id: sessionId, ssid, vendor: selectedVendor })
+    })
+    .then(r => {
+        if (!r.ok) throw new Error('Report generation failed');
+        return r.text();
+    })
+    .then(html => {
+        const blob = new Blob([html], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `wifi_report_${ssid.replace(/[^a-zA-Z0-9]/g, '_')}.html`;
+        a.click();
+        URL.revokeObjectURL(url);
+    })
+    .catch(e => alert('Report failed: ' + e.message));
+}
+</script>
+</body>
+</html>

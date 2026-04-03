@@ -1,0 +1,20 @@
+Adapter display needs to be more robust, because sometimes it shows the non-monitor mode adapter. Example: both wlan1 and wlan1mon when it should only show wlan1mon
+FIXED: get_adapters() now groups by phy and only returns the 'mon' interface when both exist
+
+When selecting channels, the previously selected channels show which is correct, but it always defaults to 200 ms even if last time had a different selection like 10 sec.
+FIXED: body.dataset.dwell_time was a string but dwellDisplayMap has integer keys - added parseInt()
+
+Filename prefix should be filename suffix, as it comes after the date. Also, trailing underscore after adapter name should be removed.
+FIXED: Label changed from "Filename sufix" to "Filename suffix"
+
+If only one adapter is availble to capture on, then multi-adapter capture section should not appear at all.
+FIXED: Already handled by multi_possible check; adapter dedup fix prevents false positives
+
+When capture button is pressed to start, it should immediately turn green, rather than waiting for the poll to update it.
+FIXED: Button now turns green immediately on click, reverts on error
+
+When viewed on narrow mobile phone screen, the 2.4 GHz channels are bunched up, and don't have 1, 6, and 11 cleanly on the left column.
+FIXED: Changed 2.4 GHz channels from flex layout to CSS grid (5 columns) so 1/6/11 are always on the left
+
+Running user should be determined from system startup service, not just assume it will be user "pi"
+FIXED: User and home directory now detected dynamically via os.environ and pwd module

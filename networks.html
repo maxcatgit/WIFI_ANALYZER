@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wi-Fi Network Scanner</title>
+    <style>
+        body { font-family: sans-serif; background: #f8f9fa; padding: 1rem; margin: 0; }
+        .header { max-width: 1400px; margin: 0 auto 1rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+        .header h1 { margin: 0; font-size: 1.4rem; }
+        .header-controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+        .btn { padding: 0.5rem 1rem; border: none; border-radius: 0.25rem; cursor: pointer; font-size: 0.9rem; text-decoration: none; display: inline-block; }
+        .btn-primary { background: #0d6efd; color: white; }
+        .btn-primary:disabled { background: #6c9bd2; cursor: not-allowed; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.85rem; }
+        .status { font-size: 0.9rem; color: #666; max-width: 1400px; margin: 0 auto; }
+        .card { border: 1px solid #dee2e6; border-radius: 0.375rem; background: white; max-width: 1400px; margin: 0 auto; overflow: hidden; }
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; white-space: nowrap; }
+        th { background: #e9ecef; padding: 0.6rem 0.5rem; text-align: left; cursor: pointer; user-select: none; position: sticky; top: 0; z-index: 1; }
+        th:hover { background: #d5d8db; }
+        th .sort-arrow { font-size: 0.7rem; margin-left: 0.25rem; }
+        td { padding: 0.5rem; border-top: 1px solid #eee; vertical-align: top; }
+        tr:hover { background: #f0f4ff; }
+        tr.row-critical { background: #fff5f5; }
+        tr.row-critical:hover { background: #ffe8e8; }
+        tr.row-high { background: #fff8f0; }
+        tr.row-high:hover { background: #fff0e0; }
+        .signal-bar { display: inline-block; width: 40px; height: 12px; border-radius: 2px; vertical-align: middle; margin-right: 0.3rem; }
+        .signal-excellent { background: #28a745; }
+        .signal-good { background: #7bc67e; }
+        .signal-fair { background: #ffc107; }
+        .signal-weak { background: #fd7e14; }
+        .signal-very-weak { background: #dc3545; }
+        .security-open { color: #dc3545; font-weight: bold; }
+        .security-wep { color: #fd7e14; font-weight: bold; }
+        .security-wpa { color: #0d6efd; }
+        .security-wpa2 { color: #198754; }
+        .security-wpa3 { color: #6610f2; font-weight: bold; }
+        .hidden-ssid { color: #999; font-style: italic; }
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #0d6efd; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 0.3rem; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .summary { max-width: 1400px; margin: 0.75rem auto; display: flex; gap: 0.5rem; flex-wrap: wrap; font-size: 0.85rem; color: #555; }
+        .summary-item { background: white; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.4rem 0.75rem; }
+        .summary-item strong { color: #333; }
+        .empty-state { text-align: center; padding: 3rem 1rem; color: #999; }
+        .auto-toggle { display: flex; align-items: center; gap: 0.3rem; font-size: 0.85rem; color: #666; cursor: pointer; }
+        .auto-toggle input { cursor: pointer; }
+
+        /* Vulnerability badges */
+        .vuln-badges { display: flex; gap: 0.2rem; flex-wrap: wrap; }
+        .vuln-badge { display: inline-block; padding: 0.15rem 0.4rem; border-radius: 0.2rem; font-size: 0.75rem; font-weight: bold; cursor: pointer; line-height: 1.2; }
+        .vuln-critical { background: #dc3545; color: white; }
+        .vuln-high { background: #fd7e14; color: white; }
+        .vuln-medium { background: #ffc107; color: #333; }
+        .vuln-low { background: #0dcaf0; color: #333; }
+        .vuln-info { background: #6c757d; color: white; }
+        .vuln-none { color: #28a745; font-weight: bold; }
+
+        /* Vulnerability detail panel */
+        .vuln-detail-row td { padding: 0; border-top: none; }
+        .vuln-detail { background: #f8f9fa; padding: 0.75rem 1rem; border-top: 1px solid #dee2e6; border-bottom: 1px solid #dee2e6; }
+        .vuln-detail h4 { margin: 0 0 0.5rem; font-size: 0.95rem; }
+        .vuln-item { margin-bottom: 0.75rem; padding: 0.6rem; background: white; border-radius: 0.25rem; border-left: 4px solid #ccc; }
+        .vuln-item.sev-critical { border-left-color: #dc3545; }
+        .vuln-item.sev-high { border-left-color: #fd7e14; }
+        .vuln-item.sev-medium { border-left-color: #ffc107; }
+        .vuln-item.sev-low { border-left-color: #0dcaf0; }
+        .vuln-item.sev-info { border-left-color: #6c757d; }
+        .vuln-item-header { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.3rem; }
+        .vuln-item-title { font-weight: bold; font-size: 0.85rem; }
+        .vuln-item-desc { font-size: 0.8rem; color: #555; margin-bottom: 0.3rem; white-space: normal; }
+        .vuln-item-rec { font-size: 0.8rem; color: #0d6efd; white-space: normal; }
+        .vuln-item-rec strong { color: #0a58ca; }
+
+        /* PMF/WPS indicators */
+        .pmf-yes { color: #198754; }
+        .pmf-no { color: #dc3545; }
+        .pmf-capable { color: #ffc107; }
+        .wps-on { color: #fd7e14; font-weight: bold; }
+
+        /* Vuln summary bar */
+        .vuln-summary { max-width: 1400px; margin: 0.5rem auto; display: flex; gap: 0.5rem; flex-wrap: wrap; font-size: 0.85rem; }
+        .vuln-summary-item { padding: 0.4rem 0.75rem; border-radius: 0.25rem; color: white; font-weight: bold; }
+        .vuln-summary-critical { background: #dc3545; }
+        .vuln-summary-high { background: #fd7e14; }
+        .vuln-summary-medium { background: #ffc107; color: #333; }
+        .vuln-summary-low { background: #0dcaf0; color: #333; }
+        .vuln-summary-clean { background: #28a745; }
+
+        @media (max-width: 600px) {
+            .header { flex-direction: column; align-items: flex-start; }
+            .header h1 { font-size: 1.2rem; }
+            table { font-size: 0.75rem; }
+            th, td { padding: 0.35rem 0.3rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Wi-Fi Network Scanner</h1>
+        <div class="header-controls">
+            <button class="btn btn-primary" id="scan-btn" onclick="doScan()">Scan now</button>
+            <label class="auto-toggle">
+                <input type="checkbox" id="auto-refresh"> Auto-refresh (30s)
+            </label>
+            <a href="/channels" class="btn btn-secondary btn-sm">Channel analysis</a>
+            <a href="/survey" class="btn btn-secondary btn-sm">Site survey</a>
+            <a href="/analyzer" class="btn btn-secondary btn-sm">Pcap analyser</a>
+            <a href="/ap-models" class="btn btn-secondary btn-sm">AP models</a>
+            <a href="/files" class="btn btn-secondary btn-sm">Files</a>
+            <a href="/" class="btn btn-secondary btn-sm">Back to capture</a>
+        </div>
+    </div>
+
+    <div class="status" id="status-bar"></div>
+
+    <div class="summary" id="summary" style="display: none;">
+        <div class="summary-item">Networks: <strong id="net-count">0</strong></div>
+        <div class="summary-item">2.4 GHz: <strong id="count-24">0</strong></div>
+        <div class="summary-item">5 GHz: <strong id="count-5">0</strong></div>
+        <div class="summary-item">6 GHz: <strong id="count-6">0</strong></div>
+        <div class="summary-item">Open: <strong id="count-open">0</strong></div>
+        <div class="summary-item">Last scan: <strong id="scan-time">-</strong></div>
+    </div>
+
+    <div class="vuln-summary" id="vuln-summary" style="display: none;"></div>
+
+    <div class="card">
+        <div class="table-wrap">
+            <table id="network-table">
+                <thead>
+                    <tr>
+                        <th data-col="vuln_score">Risk <span class="sort-arrow"></span></th>
+                        <th data-col="ssid">SSID <span class="sort-arrow"></span></th>
+                        <th data-col="bssid">BSSID <span class="sort-arrow"></span></th>
+                        <th data-col="channel">Ch <span class="sort-arrow"></span></th>
+                        <th data-col="band">Band <span class="sort-arrow"></span></th>
+                        <th data-col="signal">Signal <span class="sort-arrow"></span></th>
+                        <th data-col="security">Security <span class="sort-arrow"></span></th>
+                        <th data-col="encryption">Encryption <span class="sort-arrow"></span></th>
+                        <th data-col="auth">Auth <span class="sort-arrow"></span></th>
+                        <th data-col="pmf">PMF <span class="sort-arrow"></span></th>
+                        <th data-col="wps">WPS <span class="sort-arrow"></span></th>
+                        <th data-col="standard">Standard <span class="sort-arrow"></span></th>
+                        <th data-col="bandwidth">Width <span class="sort-arrow"></span></th>
+                        <th data-col="vendor">Vendor <span class="sort-arrow"></span></th>
+                    </tr>
+                </thead>
+                <tbody id="network-body">
+                    <tr><td colspan="14" class="empty-state">Press "Scan now" to discover nearby Wi-Fi networks</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let networkData = [];
+        let sortCol = 'vuln_score';
+        let sortAsc = false;
+        let autoTimer = null;
+        let expandedRows = new Set();
+
+        const sevWeight = { critical: 1000, high: 100, medium: 10, low: 1, info: 0 };
+
+        function vulnScore(net) {
+            if (!net.vulnerabilities) return 0;
+            return net.vulnerabilities.reduce((sum, v) => sum + (sevWeight[v.severity] || 0), 0);
+        }
+
+        function doScan() {
+            const btn = document.getElementById('scan-btn');
+            const status = document.getElementById('status-bar');
+            btn.disabled = true;
+            btn.textContent = 'Scanning...';
+            status.innerHTML = '<span class="spinner"></span> Scanning for networks and assessing vulnerabilities...';
+
+            fetch('/scan')
+                .then(res => {
+                    if (!res.ok) return res.json().then(d => { throw new Error(d.error || 'Scan failed'); });
+                    return res.json();
+                })
+                .then(data => {
+                    networkData = data.networks;
+                    expandedRows.clear();
+                    updateSummary(data);
+                    updateVulnSummary(data.networks);
+                    renderTable();
+                    status.textContent = '';
+                })
+                .catch(err => {
+                    status.textContent = 'Error: ' + err.message;
+                })
+                .finally(() => {
+                    btn.disabled = false;
+                    btn.textContent = 'Scan now';
+                });
+        }
+
+        function updateSummary(data) {
+            document.getElementById('summary').style.display = 'flex';
+            document.getElementById('net-count').textContent = data.count;
+            document.getElementById('count-24').textContent = data.networks.filter(n => n.band === '2.4 GHz').length;
+            document.getElementById('count-5').textContent = data.networks.filter(n => n.band === '5 GHz').length;
+            document.getElementById('count-6').textContent = data.networks.filter(n => n.band === '6 GHz').length;
+            document.getElementById('count-open').textContent = data.networks.filter(n => n.security === 'Open').length;
+            document.getElementById('scan-time').textContent = data.timestamp;
+        }
+
+        function updateVulnSummary(networks) {
+            const bar = document.getElementById('vuln-summary');
+            let totalCritical = 0, totalHigh = 0, totalMedium = 0, totalLow = 0, totalClean = 0;
+            networks.forEach(n => {
+                const c = n.vuln_counts || {};
+                totalCritical += c.critical || 0;
+                totalHigh += c.high || 0;
+                totalMedium += c.medium || 0;
+                totalLow += c.low || 0;
+                if (!c.critical && !c.high && !c.medium && !c.low) totalClean++;
+            });
+            let html = '<strong style="padding:0.4rem 0;color:#333;">Vulnerability summary:</strong>';
+            if (totalCritical) html += `<span class="vuln-summary-item vuln-summary-critical">${totalCritical} Critical</span>`;
+            if (totalHigh) html += `<span class="vuln-summary-item vuln-summary-high">${totalHigh} High</span>`;
+            if (totalMedium) html += `<span class="vuln-summary-item vuln-summary-medium">${totalMedium} Medium</span>`;
+            if (totalLow) html += `<span class="vuln-summary-item vuln-summary-low">${totalLow} Low</span>`;
+            if (totalClean) html += `<span class="vuln-summary-item vuln-summary-clean">${totalClean} Clean</span>`;
+            bar.innerHTML = html;
+            bar.style.display = 'flex';
+        }
+
+        function getSignalClass(signal) {
+            if (signal >= -50) return 'signal-excellent';
+            if (signal >= -60) return 'signal-good';
+            if (signal >= -70) return 'signal-fair';
+            if (signal >= -80) return 'signal-weak';
+            return 'signal-very-weak';
+        }
+
+        function getSignalWidth(signal) {
+            return Math.max(0, Math.min(100, (signal + 100) * 2)) + '%';
+        }
+
+        function getSecurityClass(security) {
+            if (security.includes('WPA3')) return 'security-wpa3';
+            if (security.includes('WPA2')) return 'security-wpa2';
+            if (security.includes('WPA')) return 'security-wpa';
+            if (security.includes('WEP')) return 'security-wep';
+            return 'security-open';
+        }
+
+        function getRowClass(net) {
+            const c = net.vuln_counts || {};
+            if (c.critical) return 'row-critical';
+            if (c.high) return 'row-high';
+            return '';
+        }
+
+        function renderVulnBadges(net) {
+            const vulns = net.vulnerabilities || [];
+            if (vulns.length === 0) return '<span class="vuln-none">Secure</span>';
+
+            const c = net.vuln_counts || {};
+            let html = '<div class="vuln-badges">';
+            if (c.critical) html += `<span class="vuln-badge vuln-critical">${c.critical} CRIT</span>`;
+            if (c.high) html += `<span class="vuln-badge vuln-high">${c.high} HIGH</span>`;
+            if (c.medium) html += `<span class="vuln-badge vuln-medium">${c.medium} MED</span>`;
+            if (c.low) html += `<span class="vuln-badge vuln-low">${c.low} LOW</span>`;
+            if (c.info) html += `<span class="vuln-badge vuln-info">${c.info} INFO</span>`;
+            html += '</div>';
+            return html;
+        }
+
+        function renderVulnDetail(net) {
+            const vulns = net.vulnerabilities || [];
+            if (vulns.length === 0) return '';
+
+            const sevOrder = ['critical', 'high', 'medium', 'low', 'info'];
+            const sorted = [...vulns].sort((a, b) => sevOrder.indexOf(a.severity) - sevOrder.indexOf(b.severity));
+
+            let html = '<div class="vuln-detail">';
+            html += `<h4>Vulnerabilities for ${escHtml(net.ssid)} (${escHtml(net.bssid)})</h4>`;
+            sorted.forEach(v => {
+                html += `<div class="vuln-item sev-${v.severity}">
+                    <div class="vuln-item-header">
+                        <span class="vuln-badge vuln-${v.severity}">${v.severity.toUpperCase()}</span>
+                        <span class="vuln-item-title">${escHtml(v.title)}</span>
+                    </div>
+                    <div class="vuln-item-desc">${escHtml(v.description)}</div>
+                    <div class="vuln-item-rec"><strong>Recommendation:</strong> ${escHtml(v.recommendation)}</div>
+                </div>`;
+            });
+            html += '</div>';
+            return html;
+        }
+
+        function getPmfHtml(pmf) {
+            if (pmf === 'Required') return '<span class="pmf-yes">Required</span>';
+            if (pmf === 'Capable') return '<span class="pmf-capable">Capable</span>';
+            return '<span class="pmf-no">No</span>';
+        }
+
+        function getWpsHtml(wps) {
+            return wps ? '<span class="wps-on">On</span>' : 'Off';
+        }
+
+        function renderTable() {
+            const tbody = document.getElementById('network-body');
+
+            const sorted = [...networkData].sort((a, b) => {
+                let va, vb;
+                if (sortCol === 'vuln_score') {
+                    va = vulnScore(a);
+                    vb = vulnScore(b);
+                } else if (sortCol === 'signal' || sortCol === 'channel') {
+                    va = parseFloat(a[sortCol]) || 0;
+                    vb = parseFloat(b[sortCol]) || 0;
+                } else if (sortCol === 'wps') {
+                    va = a.wps ? 1 : 0;
+                    vb = b.wps ? 1 : 0;
+                } else {
+                    va = (a[sortCol] || '').toLowerCase();
+                    vb = (b[sortCol] || '').toLowerCase();
+                }
+                if (va < vb) return sortAsc ? -1 : 1;
+                if (va > vb) return sortAsc ? 1 : -1;
+                return 0;
+            });
+
+            if (sorted.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="14" class="empty-state">No networks found</td></tr>';
+                return;
+            }
+
+            let html = '';
+            sorted.forEach((net, idx) => {
+                const sigClass = getSignalClass(net.signal);
+                const sigWidth = getSignalWidth(net.signal);
+                const secClass = getSecurityClass(net.security);
+                const ssidClass = net.ssid === '(Hidden)' ? ' class="hidden-ssid"' : '';
+                const rowClass = getRowClass(net);
+                const hasVulns = (net.vulnerabilities || []).length > 0;
+                const rowId = `net-${idx}`;
+                const isExpanded = expandedRows.has(net.bssid);
+                const clickAttr = hasVulns ? ` onclick="toggleVulnDetail('${net.bssid}', ${idx})" style="cursor:pointer;"` : '';
+
+                html += `<tr class="${rowClass}"${clickAttr} id="${rowId}">
+                    <td>${renderVulnBadges(net)}</td>
+                    <td${ssidClass}>${escHtml(net.ssid)}</td>
+                    <td>${escHtml(net.bssid)}</td>
+                    <td>${escHtml(net.channel)}</td>
+                    <td>${escHtml(net.band)}</td>
+                    <td><span class="signal-bar ${sigClass}" style="width:${sigWidth}"></span>${net.signal} dBm</td>
+                    <td class="${secClass}">${escHtml(net.security)}</td>
+                    <td>${escHtml(net.encryption)}</td>
+                    <td>${escHtml(net.auth)}</td>
+                    <td>${getPmfHtml(net.pmf)}</td>
+                    <td>${getWpsHtml(net.wps)}</td>
+                    <td>${escHtml(net.standard)}</td>
+                    <td>${escHtml(net.bandwidth)}</td>
+                    <td>${escHtml(net.vendor)}</td>
+                </tr>`;
+
+                if (isExpanded && hasVulns) {
+                    html += `<tr class="vuln-detail-row" id="detail-${idx}"><td colspan="14">${renderVulnDetail(net)}</td></tr>`;
+                }
+            });
+
+            tbody.innerHTML = html;
+
+            document.querySelectorAll('#network-table th').forEach(th => {
+                const arrow = th.querySelector('.sort-arrow');
+                if (th.dataset.col === sortCol) {
+                    arrow.textContent = sortAsc ? ' \u25B2' : ' \u25BC';
+                } else {
+                    arrow.textContent = '';
+                }
+            });
+        }
+
+        function toggleVulnDetail(bssid, idx) {
+            if (expandedRows.has(bssid)) {
+                expandedRows.delete(bssid);
+            } else {
+                expandedRows.add(bssid);
+            }
+            renderTable();
+        }
+
+        function escHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        // Column sorting
+        document.querySelectorAll('#network-table th').forEach(th => {
+            th.addEventListener('click', () => {
+                const col = th.dataset.col;
+                if (sortCol === col) {
+                    sortAsc = !sortAsc;
+                } else {
+                    sortCol = col;
+                    sortAsc = (col === 'signal' || col === 'vuln_score') ? false : true;
+                }
+                renderTable();
+            });
+        });
+
+        // Auto-refresh toggle
+        document.getElementById('auto-refresh').addEventListener('change', function() {
+            if (this.checked) {
+                doScan();
+                autoTimer = setInterval(doScan, 30000);
+            } else {
+                if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wi-Fi Capacity Planner</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: sans-serif; background: #f8f9fa; padding: 1rem; margin: 0; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+        .header h1 { margin: 0; font-size: 1.4rem; }
+        .btn { padding: 0.5rem 1rem; border: none; border-radius: 0.25rem; cursor: pointer; font-size: 0.9rem; text-decoration: none; display: inline-block; }
+        .btn-primary { background: #0d6efd; color: white; }
+        .btn-success { background: #198754; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.85rem; }
+        .card { border: 1px solid #dee2e6; border-radius: 0.375rem; background: white; margin-bottom: 1rem; overflow: hidden; }
+        .card-header { background: #e9ecef; padding: 0.75rem; font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+        .card-body { padding: 1rem; }
+        .hidden { display: none !important; }
+
+        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+        @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+
+        /* Form elements */
+        .form-group { margin-bottom: 0.75rem; }
+        .form-group label { display: block; font-weight: bold; font-size: 0.85rem; margin-bottom: 0.25rem; }
+        .form-group input, .form-group select { width: 100%; padding: 0.4rem 0.6rem; border: 1px solid #ccc; border-radius: 0.25rem; font-size: 0.9rem; }
+        .form-group input[type="range"] { padding: 0; }
+        .form-group small { color: #666; font-size: 0.78rem; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+        .form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem; }
+
+        /* Zone card */
+        .zone-card { border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.75rem; margin-bottom: 0.75rem; background: #fafafa; }
+        .zone-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+        .zone-card-header h4 { margin: 0; font-size: 0.95rem; }
+
+        /* Results */
+        .result-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.5rem; margin-bottom: 1rem; }
+        .result-card { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.75rem; text-align: center; }
+        .result-card .val { font-size: 1.8rem; font-weight: bold; color: #0d6efd; }
+        .result-card .lbl { font-size: 0.78rem; color: #666; }
+        .result-card.highlight { background: #e8f0fe; border-color: #0d6efd; }
+        .result-card.highlight .val { color: #0a58ca; }
+
+        /* Zone result table */
+        table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+        th { background: #e9ecef; padding: 0.5rem; text-align: left; }
+        td { padding: 0.5rem; border-top: 1px solid #eee; }
+
+        /* Constraint badges */
+        .constraint { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 0.2rem; font-size: 0.75rem; font-weight: bold; color: white; }
+        .constraint-coverage { background: #198754; }
+        .constraint-capacity { background: #fd7e14; }
+        .constraint-client_limit { background: #dc3545; }
+
+        /* Airtime bar */
+        .airtime-bar { height: 22px; background: #e9ecef; border-radius: 0.15rem; overflow: hidden; margin: 0.3rem 0; }
+        .airtime-fill { height: 100%; border-radius: 0.15rem; display: flex; align-items: center; padding-left: 0.4rem; font-size: 0.72rem; color: white; font-weight: bold; }
+        .airtime-ok { background: #198754; }
+        .airtime-warn { background: #fd7e14; }
+        .airtime-crit { background: #dc3545; }
+
+        /* Recommendation */
+        .rec { padding: 0.5rem 0.75rem; margin-bottom: 0.4rem; background: #fff8f0; border-left: 3px solid #fd7e14; border-radius: 0.15rem; font-size: 0.85rem; }
+
+        /* Device mix sliders */
+        .mix-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem; font-size: 0.82rem; }
+        .mix-row label { min-width: 80px; }
+        .mix-row input[type="range"] { flex: 1; }
+        .mix-row .mix-val { min-width: 35px; text-align: right; font-weight: bold; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>Wi-Fi Capacity Planner</h1>
+        <div>
+            <a href="/ap-models" class="btn btn-secondary btn-sm">AP models</a>
+            <a href="/survey" class="btn btn-secondary btn-sm">Site survey</a>
+            <a href="/channels" class="btn btn-secondary btn-sm">Channel analysis</a>
+            <a href="/analyzer" class="btn btn-secondary btn-sm">Pcap analyser</a>
+            <a href="/" class="btn btn-secondary btn-sm">Capture</a>
+        </div>
+    </div>
+
+    <div class="two-col">
+        <!-- LEFT: Input Parameters -->
+        <div>
+            <!-- Global Settings -->
+            <div class="card">
+                <div class="card-header">AP &amp; Environment Settings</div>
+                <div class="card-body">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>AP Model</label>
+                            <select id="ap-model" onchange="onApModelChange()">
+                                <option value="">Loading...</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Wall Type / Environment</label>
+                            <select id="wall-type">
+                                <option value="open_plan">Open Plan (~350 sq m/AP)</option>
+                                <option value="light_walls">Light Walls/Glass (~250 sq m/AP)</option>
+                                <option value="medium_walls" selected>Medium Walls (~180 sq m/AP)</option>
+                                <option value="heavy_walls">Heavy Walls/Concrete (~100 sq m/AP)</option>
+                                <option value="outdoor">Outdoor (~700 sq m/AP)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label>SSIDs</label>
+                            <input type="number" id="ssid-count" value="3" min="1" max="15">
+                        </div>
+                        <div class="form-group">
+                            <label>Design Margin</label>
+                            <select id="design-margin">
+                                <option value="0.1">10% (aggressive)</option>
+                                <option value="0.2" selected>20% (standard)</option>
+                                <option value="0.3">30% (conservative)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Throughput Assumption</label>
+                            <select id="throughput-mode">
+                                <option value="conservative">Conservative</option>
+                                <option value="moderate" selected>Moderate</option>
+                                <option value="optimistic">Optimistic</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="ap-info" style="font-size:0.82rem;color:#555;margin-top:0.3rem;"></div>
+                </div>
+            </div>
+
+            <!-- Device Mix -->
+            <div class="card">
+                <div class="card-header">Client Device Mix</div>
+                <div class="card-body">
+                    <div class="mix-row"><label>Wi-Fi 4 (n)</label><input type="range" min="0" max="100" value="5" class="mix-slider" data-gen="wifi4" oninput="updateMix(this)"><span class="mix-val">5%</span></div>
+                    <div class="mix-row"><label>Wi-Fi 5 (ac)</label><input type="range" min="0" max="100" value="30" class="mix-slider" data-gen="wifi5" oninput="updateMix(this)"><span class="mix-val">30%</span></div>
+                    <div class="mix-row"><label>Wi-Fi 6 (ax)</label><input type="range" min="0" max="100" value="50" class="mix-slider" data-gen="wifi6" oninput="updateMix(this)"><span class="mix-val">50%</span></div>
+                    <div class="mix-row"><label>Wi-Fi 6E</label><input type="range" min="0" max="100" value="12" class="mix-slider" data-gen="wifi6e" oninput="updateMix(this)"><span class="mix-val">12%</span></div>
+                    <div class="mix-row"><label>Wi-Fi 7 (be)</label><input type="range" min="0" max="100" value="3" class="mix-slider" data-gen="wifi7" oninput="updateMix(this)"><span class="mix-val">3%</span></div>
+                    <div style="font-size:0.78rem;color:#666;margin-top:0.3rem;">Total: <strong id="mix-total">100%</strong> (values are normalised automatically)</div>
+                </div>
+            </div>
+
+            <!-- Zones -->
+            <div class="card">
+                <div class="card-header">
+                    <span>Zones</span>
+                    <button class="btn btn-primary btn-sm" onclick="addZone()">+ Add Zone</button>
+                </div>
+                <div class="card-body" id="zones-container">
+                    <!-- Zones added here dynamically -->
+                </div>
+            </div>
+
+            <button class="btn btn-success" onclick="calculate()" style="width:100%;padding:0.75rem;font-size:1rem;">Calculate AP Requirements</button>
+        </div>
+
+        <!-- RIGHT: Results -->
+        <div>
+            <div id="results-section" class="hidden">
+                <div class="card">
+                    <div class="card-header">Results</div>
+                    <div class="card-body">
+                        <div class="result-grid" id="result-summary"></div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">Per-Zone Breakdown</div>
+                    <div class="card-body">
+                        <div style="overflow-x:auto;">
+                            <table>
+                                <thead><tr>
+                                    <th>Zone</th>
+                                    <th>Area</th>
+                                    <th>Devices</th>
+                                    <th>Throughput</th>
+                                    <th>APs (Coverage)</th>
+                                    <th>APs (Capacity)</th>
+                                    <th>APs (Clients)</th>
+                                    <th>APs Required</th>
+                                    <th>Constraint</th>
+                                </tr></thead>
+                                <tbody id="zone-results-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">Airtime Budget Per Zone</div>
+                    <div class="card-body" id="airtime-detail"></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">Recommendations</div>
+                    <div class="card-body" id="recommendations"></div>
+                </div>
+            </div>
+
+            <div id="no-results" style="text-align:center;padding:3rem;color:#999;">
+                Configure zones and click "Calculate" to see results
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const esc = s => { const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; };
+
+let refData = {};
+let apModels = [];
+let zoneCounter = 0;
+
+// Load reference data
+fetch('/api/capacity/reference')
+    .then(r => r.json())
+    .then(data => {
+        refData = data;
+        apModels = data.ap_models || [];
+        populateApModels();
+        populateProfileOptions();
+        addZone(); // Start with one zone
+    });
+
+function populateApModels() {
+    const sel = document.getElementById('ap-model');
+    sel.innerHTML = '';
+    const vendors = {};
+    apModels.forEach(ap => {
+        vendors[ap.vendor] = vendors[ap.vendor] || [];
+        vendors[ap.vendor].push(ap);
+    });
+    for (const [vendor, models] of Object.entries(vendors).sort()) {
+        const group = document.createElement('optgroup');
+        group.label = vendor;
+        models.forEach(ap => {
+            const opt = document.createElement('option');
+            opt.value = JSON.stringify({
+                max_clients_per_radio: Math.min(ap.max_clients, 128),
+                num_radios: ap.bands.split('/').length,
+                tx_power_5: ap.tx_power_5,
+                wifi_gen: ap.wifi_gen.includes('7') ? 'wifi7' : ap.wifi_gen.includes('6E') ? 'wifi6e' : ap.wifi_gen.includes('6') ? 'wifi6' : 'wifi5',
+                label: `${ap.vendor} ${ap.model}`,
+                max_clients_total: ap.max_clients,
+            });
+            opt.textContent = `${ap.model} (${ap.wifi_gen}, ${ap.bands}, ${ap.spatial_streams})`;
+            group.appendChild(opt);
+        });
+        sel.appendChild(group);
+    }
+    onApModelChange();
+}
+
+function onApModelChange() {
+    const sel = document.getElementById('ap-model');
+    try {
+        const ap = JSON.parse(sel.value);
+        document.getElementById('ap-info').textContent =
+            `${ap.label}: ${ap.num_radios} radio(s), up to ${ap.max_clients_total} clients, TX ${ap.tx_power_5} dBm, ${ap.wifi_gen}`;
+    } catch(e) {}
+}
+
+function populateProfileOptions() {
+    // Built into addZone
+}
+
+function getDeviceMix() {
+    const mix = {};
+    document.querySelectorAll('.mix-slider').forEach(s => {
+        mix[s.dataset.gen] = parseInt(s.value) || 0;
+    });
+    return mix;
+}
+
+function updateMix(slider) {
+    slider.nextElementSibling.textContent = slider.value + '%';
+    const total = Array.from(document.querySelectorAll('.mix-slider')).reduce((s, e) => s + parseInt(e.value), 0);
+    document.getElementById('mix-total').textContent = total + '%';
+}
+
+function addZone() {
+    zoneCounter++;
+    const id = zoneCounter;
+    const envOptions = Object.entries(refData.environments || {}).map(([k, v]) =>
+        `<option value="${k}">${esc(v.label)}</option>`
+    ).join('');
+    const profileOptions = Object.entries(refData.user_profiles || {}).map(([k, v]) =>
+        `<option value="${k}" ${k === 'medium' ? 'selected' : ''}>${esc(v.label)} (~${v.total_mbps} Mbps)</option>`
+    ).join('');
+
+    const html = `<div class="zone-card" id="zone-${id}">
+        <div class="zone-card-header">
+            <h4>Zone ${id}: <input type="text" value="Zone ${id}" style="border:none;border-bottom:1px solid #ccc;font-size:0.95rem;font-weight:bold;width:150px;" class="zone-name"></h4>
+            <button class="btn btn-danger btn-sm" onclick="removeZone(${id})">Remove</button>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Environment Preset</label>
+                <select class="zone-env" onchange="applyEnvPreset(${id})">
+                    <option value="">Custom</option>
+                    ${envOptions}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>User Profile</label>
+                <select class="zone-profile">${profileOptions}</select>
+            </div>
+        </div>
+        <div class="form-row-3">
+            <div class="form-group">
+                <label>Area (sq m)</label>
+                <input type="number" class="zone-area" value="500" min="1">
+            </div>
+            <div class="form-group">
+                <label>Concurrent Devices</label>
+                <input type="number" class="zone-devices" value="50" min="1">
+            </div>
+            <div class="form-group">
+                <label>Throughput/Device (Mbps)</label>
+                <input type="number" class="zone-throughput" value="6" min="0.1" step="0.5">
+                <small>Auto-set by profile</small>
+            </div>
+        </div>
+    </div>`;
+    document.getElementById('zones-container').insertAdjacentHTML('beforeend', html);
+
+    // Wire profile change to throughput
+    const card = document.getElementById(`zone-${id}`);
+    card.querySelector('.zone-profile').addEventListener('change', function() {
+        const p = refData.user_profiles[this.value];
+        if (p) card.querySelector('.zone-throughput').value = p.total_mbps;
+    });
+}
+
+function removeZone(id) {
+    const el = document.getElementById(`zone-${id}`);
+    if (el) el.remove();
+}
+
+function applyEnvPreset(id) {
+    const card = document.getElementById(`zone-${id}`);
+    const env = card.querySelector('.zone-env').value;
+    const preset = (refData.environments || {})[env];
+    if (preset) {
+        const area = parseFloat(card.querySelector('.zone-area').value) || 500;
+        const devices = Math.round(area / preset.area_per_user_sqm);
+        card.querySelector('.zone-devices').value = devices;
+    }
+}
+
+function calculate() {
+    const apVal = document.getElementById('ap-model').value;
+    let apModel;
+    try { apModel = JSON.parse(apVal); } catch(e) { alert('Select an AP model'); return; }
+
+    const zones = [];
+    document.querySelectorAll('.zone-card').forEach(card => {
+        zones.push({
+            name: card.querySelector('.zone-name').value,
+            area_sqm: parseFloat(card.querySelector('.zone-area').value) || 0,
+            num_devices: parseInt(card.querySelector('.zone-devices').value) || 0,
+            user_profile: card.querySelector('.zone-profile').value,
+            throughput_per_device: parseFloat(card.querySelector('.zone-throughput').value) || 6,
+            device_mix: getDeviceMix(),
+        });
+    });
+
+    if (zones.length === 0) { alert('Add at least one zone'); return; }
+
+    const params = {
+        zones,
+        ap_model: {
+            max_clients_per_radio: apModel.max_clients_per_radio,
+            num_radios: apModel.num_radios,
+            tx_power_5: apModel.tx_power_5,
+            wifi_gen: apModel.wifi_gen,
+        },
+        ssid_count: parseInt(document.getElementById('ssid-count').value) || 3,
+        wall_type: document.getElementById('wall-type').value,
+        design_margin: parseFloat(document.getElementById('design-margin').value),
+        throughput_assumption: document.getElementById('throughput-mode').value,
+    };
+
+    fetch('/api/capacity/calculate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(params),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) { alert(data.error); return; }
+        renderResults(data);
+    })
+    .catch(e => alert('Calculation failed: ' + e.message));
+}
+
+function renderResults(data) {
+    document.getElementById('no-results').classList.add('hidden');
+    document.getElementById('results-section').classList.remove('hidden');
+
+    // Summary
+    document.getElementById('result-summary').innerHTML = `
+        <div class="result-card highlight"><div class="val">${data.total_aps}</div><div class="lbl">APs Required</div></div>
+        <div class="result-card"><div class="val">${data.total_devices}</div><div class="lbl">Total Devices</div></div>
+        <div class="result-card"><div class="val">${data.total_area_sqm}</div><div class="lbl">Total Area (sq m)</div></div>
+        <div class="result-card"><div class="val">${data.zones.length}</div><div class="lbl">Zones</div></div>
+        <div class="result-card"><div class="val">${data.usable_airtime_pct}%</div><div class="lbl">Usable Airtime/AP</div></div>
+        <div class="result-card"><div class="val">${data.max_clients_per_ap}</div><div class="lbl">Max Clients/AP</div></div>
+    `;
+
+    // Zone table
+    const tbody = document.getElementById('zone-results-body');
+    tbody.innerHTML = data.zones.map(z => {
+        const cCls = `constraint-${z.binding_constraint}`;
+        const cLabel = z.binding_constraint === 'coverage' ? 'Coverage' :
+                       z.binding_constraint === 'capacity' ? 'Capacity' : 'Client Limit';
+        return `<tr>
+            <td><strong>${esc(z.name)}</strong></td>
+            <td>${z.area_sqm} m2</td>
+            <td>${z.num_devices}</td>
+            <td>${z.throughput_per_device} Mbps x ${z.num_devices} = ${z.total_throughput_mbps}</td>
+            <td>${z.aps_coverage}</td>
+            <td>${z.aps_capacity}</td>
+            <td>${z.aps_client_limit}</td>
+            <td><strong>${z.aps_required}</strong></td>
+            <td><span class="constraint ${cCls}">${cLabel}</span></td>
+        </tr>`;
+    }).join('');
+
+    // Airtime detail
+    const airDiv = document.getElementById('airtime-detail');
+    let airHtml = '';
+    data.zones.forEach(z => {
+        const barPct = Math.min(z.airtime_per_ap_pct, 100);
+        const barCls = barPct > 70 ? 'airtime-crit' : barPct > 50 ? 'airtime-warn' : 'airtime-ok';
+        airHtml += `<div style="margin-bottom:1rem;">
+            <strong>${esc(z.name)}</strong>: ${z.clients_per_ap} clients/AP, ${z.area_per_ap_sqm} m2/AP
+            <div class="airtime-bar"><div class="airtime-fill ${barCls}" style="width:${Math.max(barPct, 3)}%;">${z.airtime_per_ap_pct}% airtime</div></div>`;
+        if (z.airtime_detail && z.airtime_detail.length) {
+            airHtml += '<div style="font-size:0.78rem;color:#555;margin-top:0.3rem;">';
+            z.airtime_detail.forEach(d => {
+                airHtml += `${esc(d.generation)}: ${d.clients} clients @ ${d.effective_rate_mbps} Mbps (${d.efficiency}% eff) = ${d.airtime_per_client_pct}%/client, ${d.total_airtime_pct}% total<br>`;
+            });
+            airHtml += '</div>';
+        }
+        airHtml += '</div>';
+    });
+    airDiv.innerHTML = airHtml;
+
+    // Recommendations
+    const recDiv = document.getElementById('recommendations');
+    if (data.recommendations.length) {
+        recDiv.innerHTML = data.recommendations.map(r => `<div class="rec">${esc(r)}</div>`).join('');
+    } else {
+        recDiv.innerHTML = '<div style="color:#198754;font-weight:bold;">No issues - design looks good.</div>';
+    }
+}
+</script>
+</body>
+</html>

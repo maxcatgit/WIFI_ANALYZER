@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wi-Fi Site Survey</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: sans-serif; background: #f8f9fa; padding: 1rem; margin: 0; }
+        .container { max-width: 1600px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+        .header h1 { margin: 0; font-size: 1.4rem; }
+        .btn { padding: 0.5rem 1rem; border: none; border-radius: 0.25rem; cursor: pointer; font-size: 0.9rem; text-decoration: none; display: inline-block; }
+        .btn-primary { background: #0d6efd; color: white; }
+        .btn-primary:disabled { background: #6c9bd2; cursor: not-allowed; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-success { background: #198754; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.85rem; }
+        .card { border: 1px solid #dee2e6; border-radius: 0.375rem; background: white; margin-bottom: 1rem; overflow: hidden; }
+        .card-header { background: #e9ecef; padding: 0.75rem; font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+        .card-body { padding: 1rem; }
+        .hidden { display: none !important; }
+
+        /* Steps */
+        .steps { display: flex; gap: 0; margin-bottom: 1rem; }
+        .step { flex: 1; text-align: center; padding: 0.6rem; background: #e9ecef; font-size: 0.85rem; font-weight: bold; color: #999; border-right: 2px solid white; }
+        .step.active { background: #0d6efd; color: white; }
+        .step.done { background: #198754; color: white; }
+        .step:first-child { border-radius: 0.25rem 0 0 0.25rem; }
+        .step:last-child { border-radius: 0 0.25rem 0.25rem 0; border-right: none; }
+
+        /* Floor plan canvas area */
+        .plan-container { position: relative; overflow: auto; border: 2px solid #dee2e6; border-radius: 0.25rem; background: #e0e0e0; max-height: 70vh; cursor: crosshair; }
+        .plan-container img { display: block; max-width: none; }
+        .plan-container canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+
+        /* Measurement points on map */
+        .map-point { position: absolute; width: 16px; height: 16px; border-radius: 50%; background: #0d6efd; border: 2px solid white; transform: translate(-50%, -50%); box-shadow: 0 1px 3px rgba(0,0,0,0.3); z-index: 10; cursor: pointer; }
+        .map-point.scale-point { background: #dc3545; }
+
+        /* Controls panel */
+        .controls { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.5rem; }
+        .controls label { font-size: 0.85rem; font-weight: bold; }
+        .controls select, .controls input { padding: 0.3rem 0.5rem; border: 1px solid #ccc; border-radius: 0.25rem; font-size: 0.85rem; }
+
+        /* Drop zone */
+        .drop-zone { border: 3px dashed #ccc; border-radius: 0.5rem; padding: 3rem 1rem; text-align: center; cursor: pointer; transition: all 0.2s; }
+        .drop-zone:hover { border-color: #0d6efd; background: #e8f0fe; }
+        .drop-zone input { display: none; }
+        .drop-zone p { margin: 0; color: #666; font-size: 1.1rem; }
+
+        /* Stats bar */
+        .stats-bar { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem; margin-bottom: 0.5rem; color: #555; }
+        .stats-bar strong { color: #333; }
+
+        /* Legend */
+        .legend { display: flex; gap: 0.3rem; align-items: center; font-size: 0.75rem; margin-top: 0.5rem; }
+        .legend-item { display: flex; align-items: center; gap: 0.2rem; }
+        .legend-color { width: 20px; height: 12px; border-radius: 2px; }
+
+        /* BSSID selector */
+        .bssid-list { max-height: 200px; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.5rem; font-size: 0.82rem; }
+        .bssid-item { padding: 0.2rem 0; cursor: pointer; }
+        .bssid-item:hover { background: #f0f4ff; }
+        .bssid-item.selected { background: #0d6efd; color: white; border-radius: 0.15rem; padding: 0.2rem 0.3rem; }
+
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #0d6efd; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        @media (max-width: 600px) {
+            .header h1 { font-size: 1.2rem; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>Wi-Fi Site Survey</h1>
+        <div>
+            <a href="/capacity" class="btn btn-secondary btn-sm">Capacity planner</a>
+            <a href="/ap-models" class="btn btn-secondary btn-sm">AP models</a>
+            <a href="/channels" class="btn btn-secondary btn-sm">Channel analysis</a>
+            <a href="/analyzer" class="btn btn-secondary btn-sm">Pcap analyser</a>
+            <a href="/networks" class="btn btn-secondary btn-sm">Network scanner</a>
+            <a href="/" class="btn btn-secondary btn-sm">Capture</a>
+        </div>
+    </div>
+
+    <div class="steps">
+        <div class="step active" id="step-1">1. Upload Floor Plan</div>
+        <div class="step" id="step-2">2. Set Scale</div>
+        <div class="step" id="step-3">3. Survey (Walk &amp; Tap)</div>
+        <div class="step" id="step-4">4. Heatmap</div>
+    </div>
+
+    <!-- Step 1: Upload -->
+    <div id="phase-upload">
+        <div class="card"><div class="card-body">
+            <div style="margin-bottom:1rem;">
+                <label style="font-weight:bold;font-size:0.9rem;">Project Name:</label><br>
+                <input type="text" id="project-name" value="Site Survey" style="padding:0.4rem;border:1px solid #ccc;border-radius:0.25rem;width:300px;">
+            </div>
+            <div class="drop-zone" id="drop-zone">
+                <p>Drop a floor plan image here or click to select<br><small>(PNG, JPG, SVG, PDF)</small></p>
+                <input type="file" id="file-input" accept="image/*,.pdf">
+            </div>
+        </div></div>
+    </div>
+
+    <!-- Step 2: Scale -->
+    <div id="phase-scale" class="hidden">
+        <div class="card"><div class="card-header">
+            <span>Set Scale: Click two points on the floor plan, then enter the real-world distance between them</span>
+            <button class="btn btn-success btn-sm" id="scale-done-btn" onclick="finishScale()" disabled>Done</button>
+        </div><div class="card-body">
+            <div class="stats-bar">
+                <span>Click point <strong id="scale-click-num">1</strong> of 2 on the floor plan</span>
+                <span id="scale-distance-wrap" class="hidden">
+                    Distance: <input type="number" id="scale-distance" style="width:80px;padding:0.3rem;" min="0.1" step="0.1" placeholder="meters"> metres
+                </span>
+            </div>
+            <div class="plan-container" id="scale-plan" style="cursor:crosshair;"></div>
+        </div></div>
+    </div>
+
+    <!-- Step 3: Survey -->
+    <div id="phase-survey" class="hidden">
+        <div class="card"><div class="card-header">
+            <span>Survey: Tap your position on the floor plan, then a scan runs automatically</span>
+            <div>
+                <button class="btn btn-success btn-sm" onclick="goToHeatmap()">View Heatmap</button>
+            </div>
+        </div><div class="card-body">
+            <div class="stats-bar">
+                <span>Points: <strong id="point-count">0</strong></span>
+                <span>Scale: <strong id="scale-display">-</strong> px/m</span>
+                <span id="scan-status"></span>
+            </div>
+            <div class="plan-container" id="survey-plan" style="cursor:crosshair;"></div>
+        </div></div>
+    </div>
+
+    <!-- Step 4: Heatmap -->
+    <div id="phase-heatmap" class="hidden">
+        <div class="card"><div class="card-header">
+            <span>Heatmap</span>
+            <div>
+                <button class="btn btn-secondary btn-sm" onclick="goToSurvey()">Back to Survey</button>
+            </div>
+        </div><div class="card-body">
+            <div class="controls">
+                <label>Layer:</label>
+                <select id="layer-select" onchange="renderHeatmap()">
+                    <option value="signal">Signal Strength (dBm)</option>
+                    <option value="ap_count">AP Count</option>
+                    <option value="channel">Channel Count</option>
+                </select>
+                <label>Filter BSSID:</label>
+                <select id="bssid-select" onchange="renderHeatmap()">
+                    <option value="">All (strongest signal)</option>
+                </select>
+            </div>
+            <div class="plan-container" id="heatmap-plan">
+                <canvas id="heatmap-canvas"></canvas>
+            </div>
+            <div class="legend" id="heatmap-legend"></div>
+        </div></div>
+    </div>
+</div>
+
+<script>
+let projectId = null;
+let floorPlanImg = null;
+let floorPlanUrl = null;
+let scalePoints = [];
+let scalePxPerM = null;
+let surveyPoints = [];
+let heatmapData = null;
+
+const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+
+// --- Step 1: Upload ---
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = '#0d6efd'; });
+dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = '#ccc'; });
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.style.borderColor = '#ccc'; if (e.dataTransfer.files.length) uploadPlan(e.dataTransfer.files[0]); });
+fileInput.addEventListener('change', () => { if (fileInput.files.length) uploadPlan(fileInput.files[0]); });
+
+function uploadPlan(file) {
+    const name = document.getElementById('project-name').value || 'Site Survey';
+    // Create project
+    fetch('/survey/create', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name })
+    })
+    .then(r => r.json())
+    .then(data => {
+        projectId = data.id;
+        // Upload floor plan
+        const fd = new FormData();
+        fd.append('file', file);
+        return fetch(`/survey/upload_plan/${projectId}`, { method: 'POST', body: fd });
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) { alert(data.error); return; }
+        floorPlanUrl = data.path;
+        goToScale();
+    })
+    .catch(e => alert('Upload failed: ' + e.message));
+}
+
+// --- Step 2: Scale ---
+function goToScale() {
+    setStep(2);
+    document.getElementById('phase-upload').classList.add('hidden');
+    document.getElementById('phase-scale').classList.remove('hidden');
+
+    const container = document.getElementById('scale-plan');
+    const img = new Image();
+    img.onload = () => {
+        floorPlanImg = img;
+        container.innerHTML = '';
+        container.appendChild(img);
+        container.addEventListener('click', onScaleClick);
+    };
+    img.src = floorPlanUrl;
+}
+
+function onScaleClick(e) {
+    if (scalePoints.length >= 2) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left + e.currentTarget.scrollLeft;
+    const y = e.clientY - rect.top + e.currentTarget.scrollTop;
+    scalePoints.push({ x, y });
+
+    // Draw point
+    const dot = document.createElement('div');
+    dot.className = 'map-point scale-point';
+    dot.style.left = x + 'px';
+    dot.style.top = y + 'px';
+    e.currentTarget.appendChild(dot);
+
+    if (scalePoints.length === 1) {
+        document.getElementById('scale-click-num').textContent = '2';
+    } else {
+        document.getElementById('scale-click-num').textContent = 'Done';
+        document.getElementById('scale-distance-wrap').classList.remove('hidden');
+        document.getElementById('scale-done-btn').disabled = false;
+    }
+}
+
+function finishScale() {
+    const dist = parseFloat(document.getElementById('scale-distance').value);
+    if (!dist || dist <= 0) { alert('Enter the distance in metres'); return; }
+    const dx = scalePoints[1].x - scalePoints[0].x;
+    const dy = scalePoints[1].y - scalePoints[0].y;
+    const pxDist = Math.sqrt(dx * dx + dy * dy);
+    scalePxPerM = pxDist / dist;
+
+    fetch(`/survey/set_scale/${projectId}`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ px_per_m: scalePxPerM })
+    }).then(() => goToSurvey());
+}
+
+// --- Step 3: Survey ---
+function goToSurvey() {
+    setStep(3);
+    document.getElementById('phase-scale').classList.add('hidden');
+    document.getElementById('phase-survey').classList.remove('hidden');
+    document.getElementById('phase-heatmap').classList.add('hidden');
+    document.getElementById('scale-display').textContent = scalePxPerM ? scalePxPerM.toFixed(1) : '-';
+
+    const container = document.getElementById('survey-plan');
+    container.innerHTML = '';
+    const img = floorPlanImg.cloneNode();
+    container.appendChild(img);
+    container.addEventListener('click', onSurveyClick);
+
+    // Re-draw existing points
+    surveyPoints.forEach((pt, i) => drawSurveyPoint(container, pt.x, pt.y, i + 1));
+    document.getElementById('point-count').textContent = surveyPoints.length;
+}
+
+function onSurveyClick(e) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left + e.currentTarget.scrollLeft;
+    const y = e.clientY - rect.top + e.currentTarget.scrollTop;
+
+    const status = document.getElementById('scan-status');
+    status.innerHTML = '<span class="spinner"></span> Scanning...';
+
+    // Trigger scan at this point
+    fetch('/scan')
+        .then(r => r.json())
+        .then(data => {
+            const networks = data.networks || [];
+            const pointData = { x, y, networks };
+            surveyPoints.push(pointData);
+
+            // Record on server
+            fetch(`/survey/record_point/${projectId}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(pointData)
+            });
+
+            drawSurveyPoint(e.currentTarget, x, y, surveyPoints.length);
+            document.getElementById('point-count').textContent = surveyPoints.length;
+            status.textContent = `Point ${surveyPoints.length}: ${networks.length} networks found`;
+        })
+        .catch(err => {
+            status.textContent = 'Scan failed: ' + err.message;
+        });
+}
+
+function drawSurveyPoint(container, x, y, num) {
+    const dot = document.createElement('div');
+    dot.className = 'map-point';
+    dot.style.left = x + 'px';
+    dot.style.top = y + 'px';
+    dot.title = `Point ${num}`;
+    container.appendChild(dot);
+}
+
+// --- Step 4: Heatmap ---
+function goToHeatmap() {
+    if (surveyPoints.length < 2) { alert('Need at least 2 measurement points'); return; }
+    setStep(4);
+    document.getElementById('phase-survey').classList.add('hidden');
+    document.getElementById('phase-heatmap').classList.remove('hidden');
+
+    // Populate BSSID dropdown
+    const bssidSel = document.getElementById('bssid-select');
+    bssidSel.innerHTML = '<option value="">All (strongest signal)</option>';
+    const bssids = {};
+    surveyPoints.forEach(pt => {
+        pt.networks.forEach(n => {
+            if (n.bssid) {
+                bssids[n.bssid] = bssids[n.bssid] || { ssid: n.ssid || '(Hidden)', count: 0 };
+                bssids[n.bssid].count++;
+            }
+        });
+    });
+    Object.entries(bssids).sort((a, b) => b[1].count - a[1].count).forEach(([b, info]) => {
+        const opt = document.createElement('option');
+        opt.value = b;
+        opt.textContent = `${info.ssid} (${b}) - ${info.count} pts`;
+        bssidSel.appendChild(opt);
+    });
+
+    // Setup floor plan
+    const container = document.getElementById('heatmap-plan');
+    const oldImgs = container.querySelectorAll('img');
+    oldImgs.forEach(i => i.remove());
+    const img = floorPlanImg.cloneNode();
+    container.insertBefore(img, container.firstChild);
+
+    const canvas = document.getElementById('heatmap-canvas');
+    canvas.width = floorPlanImg.naturalWidth;
+    canvas.height = floorPlanImg.naturalHeight;
+
+    renderHeatmap();
+}
+
+function renderHeatmap() {
+    const canvas = document.getElementById('heatmap-canvas');
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const layer = document.getElementById('layer-select').value;
+    const bssidFilter = document.getElementById('bssid-select').value;
+
+    // Build point data
+    const points = [];
+    surveyPoints.forEach(pt => {
+        let val;
+        if (layer === 'signal') {
+            let nets = pt.networks.filter(n => n.signal);
+            if (bssidFilter) nets = nets.filter(n => n.bssid === bssidFilter);
+            val = nets.length ? Math.max(...nets.map(n => n.signal)) : null;
+        } else if (layer === 'ap_count') {
+            val = pt.networks.length;
+        } else if (layer === 'channel') {
+            val = new Set(pt.networks.map(n => n.channel).filter(Boolean)).size;
+        }
+        if (val !== null) points.push({ x: pt.x, y: pt.y, value: val });
+    });
+
+    if (points.length < 2) return;
+
+    // IDW interpolation
+    const resolution = 6; // pixels per cell
+    const imgData = ctx.createImageData(w, h);
+
+    // Find value range for color mapping
+    let minVal, maxVal;
+    if (layer === 'signal') {
+        minVal = -90; maxVal = -30;
+    } else {
+        minVal = Math.min(...points.map(p => p.value));
+        maxVal = Math.max(...points.map(p => p.value));
+    }
+    if (minVal === maxVal) maxVal = minVal + 1;
+
+    // Radius of influence (pixels)
+    const radius = scalePxPerM ? scalePxPerM * 25 : Math.max(w, h) * 0.3;
+
+    for (let py = 0; py < h; py += resolution) {
+        for (let px = 0; px < w; px += resolution) {
+            let weightSum = 0;
+            let valueSum = 0;
+            let hasNearby = false;
+
+            for (const pt of points) {
+                const dx = px - pt.x;
+                const dy = py - pt.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist > radius) continue;
+                hasNearby = true;
+                const weight = 1 / Math.pow(Math.max(dist, 1), 2);
+                weightSum += weight;
+                valueSum += weight * pt.value;
+            }
+
+            if (!hasNearby) continue;
+
+            const interpolated = valueSum / weightSum;
+            const norm = Math.max(0, Math.min(1, (interpolated - minVal) / (maxVal - minVal)));
+            const color = layer === 'signal' ? signalColor(norm) : countColor(norm);
+
+            // Fill resolution x resolution block
+            for (let dy = 0; dy < resolution && py + dy < h; dy++) {
+                for (let dx = 0; dx < resolution && px + dx < w; dx++) {
+                    const idx = ((py + dy) * w + (px + dx)) * 4;
+                    imgData.data[idx] = color[0];
+                    imgData.data[idx + 1] = color[1];
+                    imgData.data[idx + 2] = color[2];
+                    imgData.data[idx + 3] = 140; // semi-transparent
+                }
+            }
+        }
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+
+    // Draw measurement points on top
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 2;
+    points.forEach(pt => {
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+    });
+
+    // Legend
+    renderLegend(layer, minVal, maxVal);
+}
+
+function signalColor(norm) {
+    // 0 = worst (red), 1 = best (green)
+    if (norm > 0.75) return [0, 160, 0];      // Strong green
+    if (norm > 0.50) return [100, 200, 0];     // Yellow-green
+    if (norm > 0.25) return [255, 200, 0];     // Yellow
+    if (norm > 0.10) return [255, 120, 0];     // Orange
+    return [220, 50, 50];                       // Red
+}
+
+function countColor(norm) {
+    if (norm > 0.75) return [220, 50, 50];     // Red (many)
+    if (norm > 0.50) return [255, 120, 0];     // Orange
+    if (norm > 0.25) return [255, 200, 0];     // Yellow
+    return [0, 160, 0];                         // Green (few)
+}
+
+function renderLegend(layer, minVal, maxVal) {
+    const legend = document.getElementById('heatmap-legend');
+    if (layer === 'signal') {
+        legend.innerHTML = `
+            <div class="legend-item"><div class="legend-color" style="background:rgb(0,160,0);"></div> Excellent (> -50)</div>
+            <div class="legend-item"><div class="legend-color" style="background:rgb(100,200,0);"></div> Good</div>
+            <div class="legend-item"><div class="legend-color" style="background:rgb(255,200,0);"></div> Fair</div>
+            <div class="legend-item"><div class="legend-color" style="background:rgb(255,120,0);"></div> Weak</div>
+            <div class="legend-item"><div class="legend-color" style="background:rgb(220,50,50);"></div> Very Weak (< -85)</div>
+        `;
+    } else {
+        legend.innerHTML = `
+            <div class="legend-item"><div class="legend-color" style="background:rgb(0,160,0);"></div> Low (${minVal})</div>
+            <div class="legend-item"><div class="legend-color" style="background:rgb(255,200,0);"></div> Medium</div>
+            <div class="legend-item"><div class="legend-color" style="background:rgb(220,50,50);"></div> High (${maxVal})</div>
+        `;
+    }
+}
+
+function setStep(n) {
+    for (let i = 1; i <= 4; i++) {
+        const el = document.getElementById(`step-${i}`);
+        el.classList.remove('active', 'done');
+        if (i < n) el.classList.add('done');
+        if (i === n) el.classList.add('active');
+    }
+}
+</script>
+</body>
+</html>

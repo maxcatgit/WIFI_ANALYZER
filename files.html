@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Manager</title>
+    <style>
+        body { font-family: sans-serif; background: #f8f9fa; padding: 1rem; margin: 0; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+        .header h1 { margin: 0; font-size: 1.4rem; }
+        .nav { display: flex; gap: 0.5rem; }
+        .btn { padding: 0.5rem 1rem; border: none; border-radius: 0.25rem; cursor: pointer; font-size: 0.9rem; text-decoration: none; display: inline-block; }
+        .btn-primary { background: #0d6efd; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-danger:disabled { background: #e9a0a7; cursor: not-allowed; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.85rem; }
+        .btn-outline { background: white; color: #333; border: 1px solid #ccc; }
+        .btn-outline:hover { background: #f0f0f0; }
+        .card { border: 1px solid #dee2e6; border-radius: 0.375rem; background: white; margin-bottom: 1rem; overflow: hidden; }
+        .card-header { background: #e9ecef; padding: 0.75rem; font-weight: bold; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+        .card-body { padding: 1rem; }
+
+        /* Disk usage bar */
+        .disk-bar { background: #e9ecef; border-radius: 0.25rem; height: 30px; overflow: hidden; position: relative; margin-bottom: 0.5rem; }
+        .disk-used { background: #0d6efd; height: 100%; display: flex; align-items: center; padding-left: 0.5rem; color: white; font-size: 0.85rem; font-weight: bold; transition: width 0.3s; }
+        .disk-used.warn { background: #fd7e14; }
+        .disk-used.critical { background: #dc3545; }
+        .disk-info { display: flex; gap: 1.5rem; font-size: 0.9rem; color: #555; flex-wrap: wrap; }
+        .disk-info strong { color: #333; }
+
+        /* Group cards */
+        .group-section { margin-bottom: 1.5rem; }
+        .group-tabs { display: flex; gap: 0; border-bottom: 2px solid #dee2e6; margin-bottom: 1rem; }
+        .group-tab { padding: 0.5rem 1rem; border: none; background: none; cursor: pointer; font-size: 0.9rem; border-bottom: 3px solid transparent; margin-bottom: -2px; color: #666; }
+        .group-tab.active { color: #0d6efd; border-bottom-color: #0d6efd; font-weight: bold; }
+        .group-card { border: 1px solid #dee2e6; border-radius: 0.25rem; margin-bottom: 0.5rem; overflow: hidden; }
+        .group-header { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0.75rem; background: #f8f9fa; cursor: pointer; }
+        .group-header:hover { background: #e9ecef; }
+        .group-title { font-weight: bold; font-size: 0.9rem; }
+        .group-meta { font-size: 0.8rem; color: #666; }
+        .group-files { display: none; padding: 0; }
+        .group-files.show { display: block; }
+
+        /* File list */
+        .file-row { display: flex; align-items: center; padding: 0.4rem 0.75rem; border-top: 1px solid #eee; font-size: 0.85rem; gap: 0.5rem; }
+        .file-row:hover { background: #f0f4ff; }
+        .file-cb { flex-shrink: 0; }
+        .file-name { flex: 1; word-break: break-all; }
+        .file-size { flex-shrink: 0; color: #666; min-width: 70px; text-align: right; }
+        .file-date { flex-shrink: 0; color: #999; font-size: 0.8rem; min-width: 140px; text-align: right; }
+
+        /* Selection bar */
+        .select-bar { position: sticky; bottom: 0; background: white; border-top: 2px solid #dee2e6; padding: 0.75rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; z-index: 10; box-shadow: 0 -2px 8px rgba(0,0,0,0.1); }
+        .select-info { font-size: 0.9rem; color: #333; }
+        .select-info strong { color: #dc3545; }
+
+        /* Confirm modal */
+        .modal { display: flex; align-items: center; justify-content: center; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
+        .modal-box { background: white; border-radius: 0.375rem; padding: 1.5rem; max-width: 500px; width: 90%; }
+        .modal-box h3 { margin: 0 0 0.75rem; }
+        .modal-box p { margin: 0 0 1rem; font-size: 0.9rem; color: #555; }
+        .modal-btns { display: flex; gap: 0.5rem; justify-content: flex-end; }
+
+        .hidden { display: none !important; }
+        @media (max-width: 600px) {
+            .header h1 { font-size: 1.2rem; }
+            .file-date { display: none; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>File Manager</h1>
+        <div class="nav">
+            <a href="/" class="btn btn-secondary btn-sm">Capture</a>
+            <a href="/networks" class="btn btn-secondary btn-sm">Scanner</a>
+            <a href="/analyzer" class="btn btn-secondary btn-sm">Analyser</a>
+        </div>
+    </div>
+
+    <!-- Disk usage -->
+    <div class="card">
+        <div class="card-header">Disk Usage</div>
+        <div class="card-body">
+            <div class="disk-bar"><div class="disk-used" id="disk-bar">-</div></div>
+            <div class="disk-info">
+                <span>Total: <strong id="disk-total">-</strong></span>
+                <span>Used: <strong id="disk-used">-</strong></span>
+                <span>Free: <strong id="disk-free">-</strong></span>
+                <span>Captures: <strong id="cap-total">-</strong></span>
+                <span>Analyser uploads: <strong id="upl-total">-</strong></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Group view tabs -->
+    <div class="card">
+        <div class="card-header">
+            <span>Capture Files</span>
+            <div>
+                <button class="btn btn-sm btn-outline" onclick="selectAllVisible()">Select all visible</button>
+                <button class="btn btn-sm btn-outline" onclick="deselectAll()">Deselect all</button>
+                <button class="btn btn-sm btn-primary" onclick="refreshFiles()">Refresh</button>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="group-tabs">
+                <button class="group-tab active" data-view="date">By Date</button>
+                <button class="group-tab" data-view="name">By Name</button>
+                <button class="group-tab" data-view="all">All Files</button>
+                <button class="group-tab" data-view="uploads">Analyser Uploads</button>
+            </div>
+            <div id="file-content"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Selection action bar -->
+<div class="select-bar hidden" id="select-bar">
+    <div class="select-info"><span id="sel-count">0</span> files selected (<strong id="sel-size">0 MB</strong>)</div>
+    <button class="btn btn-danger" id="delete-btn" onclick="confirmDelete()">Delete selected</button>
+</div>
+
+<!-- Confirm modal -->
+<div class="modal hidden" id="confirm-modal">
+    <div class="modal-box">
+        <h3>Confirm deletion</h3>
+        <p id="confirm-text"></p>
+        <div class="modal-btns">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-danger" onclick="executeDelete()">Delete</button>
+        </div>
+    </div>
+</div>
+
+<script>
+let fileData = null;
+let selectedFiles = new Set();
+let currentView = 'date';
+
+function refreshFiles() {
+    fetch('/files/list')
+        .then(r => r.json())
+        .then(data => {
+            fileData = data;
+            selectedFiles.clear();
+            renderDisk();
+            renderView();
+            updateSelectBar();
+        });
+}
+
+function renderDisk() {
+    const d = fileData.disk;
+    const pct = d.total_gb > 0 ? (d.used_gb / d.total_gb) * 100 : 0;
+    const bar = document.getElementById('disk-bar');
+    bar.style.width = pct + '%';
+    bar.textContent = pct.toFixed(0) + '% used';
+    bar.className = 'disk-used' + (pct > 90 ? ' critical' : pct > 75 ? ' warn' : '');
+    document.getElementById('disk-total').textContent = d.total_gb + ' GB';
+    document.getElementById('disk-used').textContent = d.used_gb + ' GB';
+    document.getElementById('disk-free').textContent = d.free_gb + ' GB';
+    document.getElementById('cap-total').textContent = fileData.cap_total_mb + ' MB';
+    document.getElementById('upl-total').textContent = fileData.upl_total_mb + ' MB';
+}
+
+function renderView() {
+    const el = document.getElementById('file-content');
+    if (currentView === 'date') renderGrouped(el, fileData.date_groups, 'date');
+    else if (currentView === 'name') renderGrouped(el, fileData.name_groups, 'name');
+    else if (currentView === 'all') renderAllFiles(el, fileData.captures);
+    else if (currentView === 'uploads') renderAllFiles(el, fileData.uploads);
+}
+
+function renderGrouped(el, groups, type) {
+    const sorted = Object.entries(groups).sort((a, b) => {
+        if (type === 'date') return b[0].localeCompare(a[0]);
+        return b[1].size_mb - a[1].size_mb;
+    });
+
+    if (sorted.length === 0) {
+        el.innerHTML = '<p style="color:#999;text-align:center;">No files found</p>';
+        return;
+    }
+
+    el.innerHTML = sorted.map(([name, g], idx) => {
+        const files = findFilesByNames(g.files);
+        return `<div class="group-card">
+            <div class="group-header" onclick="toggleGroup(${idx})">
+                <div>
+                    <span class="group-title">${esc(name)}</span>
+                    <span class="group-meta">&mdash; ${g.count} file${g.count !== 1 ? 's' : ''}, ${g.size_mb} MB</span>
+                </div>
+                <div>
+                    <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); selectGroup('${esc(name)}', ${JSON.stringify(g.files).replace(/"/g, '&quot;')})">Select group</button>
+                </div>
+            </div>
+            <div class="group-files" id="grp-${idx}">
+                ${files.map(f => fileRow(f)).join('')}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function renderAllFiles(el, files) {
+    if (!files || files.length === 0) {
+        el.innerHTML = '<p style="color:#999;text-align:center;">No files found</p>';
+        return;
+    }
+    el.innerHTML = files.map(f => fileRow(f)).join('');
+}
+
+function fileRow(f) {
+    const checked = selectedFiles.has(f.name) ? 'checked' : '';
+    const dt = new Date(f.mtime * 1000);
+    const dateStr = dt.toLocaleDateString() + ' ' + dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    return `<div class="file-row">
+        <input type="checkbox" class="file-cb" data-name="${esc(f.name)}" data-size="${f.size}" ${checked} onchange="toggleFile(this)">
+        <span class="file-name">${esc(f.name)}</span>
+        <span class="file-size">${f.size_mb} MB</span>
+        <span class="file-date">${dateStr}</span>
+    </div>`;
+}
+
+function findFilesByNames(names) {
+    const nameSet = new Set(names);
+    const allFiles = [...(fileData.captures || []), ...(fileData.uploads || [])];
+    return allFiles.filter(f => nameSet.has(f.name));
+}
+
+function toggleGroup(idx) {
+    const el = document.getElementById('grp-' + idx);
+    if (el) el.classList.toggle('show');
+}
+
+function selectGroup(name, fileNames) {
+    fileNames.forEach(fn => selectedFiles.add(fn));
+    renderView();
+    updateSelectBar();
+}
+
+function toggleFile(cb) {
+    const name = cb.dataset.name;
+    if (cb.checked) selectedFiles.add(name);
+    else selectedFiles.delete(name);
+    updateSelectBar();
+}
+
+function selectAllVisible() {
+    document.querySelectorAll('.file-cb').forEach(cb => {
+        cb.checked = true;
+        selectedFiles.add(cb.dataset.name);
+    });
+    updateSelectBar();
+}
+
+function deselectAll() {
+    selectedFiles.clear();
+    document.querySelectorAll('.file-cb').forEach(cb => cb.checked = false);
+    updateSelectBar();
+}
+
+function updateSelectBar() {
+    const bar = document.getElementById('select-bar');
+    if (selectedFiles.size === 0) {
+        bar.classList.add('hidden');
+        return;
+    }
+    bar.classList.remove('hidden');
+    document.getElementById('sel-count').textContent = selectedFiles.size;
+
+    // Calculate total size of selected files
+    const allFiles = [...(fileData.captures || []), ...(fileData.uploads || [])];
+    const sizeMap = {};
+    allFiles.forEach(f => sizeMap[f.name] = f.size);
+    const totalBytes = [...selectedFiles].reduce((sum, n) => sum + (sizeMap[n] || 0), 0);
+    document.getElementById('sel-size').textContent = (totalBytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function confirmDelete() {
+    if (selectedFiles.size === 0) return;
+    const allFiles = [...(fileData.captures || []), ...(fileData.uploads || [])];
+    const sizeMap = {};
+    allFiles.forEach(f => sizeMap[f.name] = f.size);
+    const totalMB = ([...selectedFiles].reduce((s, n) => s + (sizeMap[n] || 0), 0) / (1024 * 1024)).toFixed(1);
+
+    document.getElementById('confirm-text').textContent =
+        `Are you sure you want to permanently delete ${selectedFiles.size} file${selectedFiles.size > 1 ? 's' : ''} (${totalMB} MB)?`;
+    document.getElementById('confirm-modal').classList.remove('hidden');
+}
+
+function closeModal() {
+    document.getElementById('confirm-modal').classList.add('hidden');
+}
+
+function executeDelete() {
+    closeModal();
+    const files = [...selectedFiles];
+    const btn = document.getElementById('delete-btn');
+    btn.disabled = true;
+    btn.textContent = 'Deleting...';
+
+    fetch('/files/delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ files })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.errors && data.errors.length) {
+            alert('Some files could not be deleted:\n' + data.errors.join('\n'));
+        }
+        selectedFiles.clear();
+        refreshFiles();
+    })
+    .catch(() => alert('Delete request failed'))
+    .finally(() => { btn.disabled = false; btn.textContent = 'Delete selected'; });
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// Tab switching
+document.querySelectorAll('.group-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.group-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        currentView = tab.dataset.view;
+        renderView();
+    });
+});
+
+refreshFiles();
+</script>
+</body>
+</html>
