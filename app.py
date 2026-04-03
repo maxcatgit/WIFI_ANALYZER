@@ -1892,7 +1892,12 @@ def scan_with_monitor(adapter, duration=5):
     pcap_path = f'/tmp/wifi_scan_{uuid.uuid4().hex[:8]}.pcap'
 
     try:
-        # One shell command. Blocking. Same dumpcap that works from command line.
+        # Set adapter to channel 6 (2437 MHz) first - most likely to have APs
+        subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'freq', '2437', 'HT20'],
+                       capture_output=True, text=True, timeout=2)
+        time.sleep(0.1)
+
+        # Capture for duration seconds on this channel
         shell_cmd = f'timeout {duration} dumpcap -i {adapter} -w {pcap_path} -q 2>/dev/null; true'
         subprocess.run(shell_cmd, shell=True, timeout=duration + 5)
         time.sleep(0.3)
@@ -1906,8 +1911,9 @@ def scan_with_monitor(adapter, duration=5):
         if pcap_size < 100:
             return [], adapter
 
-        # Parse beacons from the pcap
-        rows = run_tshark(pcap_path, 'wlan.fc.type_subtype == 0x0008', [
+        # Parse beacons AND probe responses (both contain SSID/BSSID/security)
+        rows = run_tshark(pcap_path,
+            'wlan.fc.type_subtype == 0x0008 || wlan.fc.type_subtype == 0x0005', [
             'wlan.bssid', 'wlan.ssid', 'radiotap.channel.freq',
             'radiotap.dbm_antsignal',
             'wlan.rsn.akms.type', 'wlan.rsn.pcs.type',
