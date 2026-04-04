@@ -13,6 +13,7 @@ import uuid
 import math
 from ap_models import AP_MODELS, get_vendors, search_models, get_wifi_gen_summary
 from capacity_planner import calculate_capacity, get_reference_data
+from ap_vulns import check_ap_vulnerabilities
 
 app = Flask(__name__, static_folder='static')
 
@@ -1428,7 +1429,7 @@ def parse_iw_scan(output):
         if m:
             net['vht_channel_width'] = m.group(1).strip()
 
-        # WPS
+        # WPS + device identification
         if re.search(r'WPS:|Wi-Fi Protected Setup', text):
             net['wps'] = True
             m = re.search(r'Version: (\S+)', text)
@@ -1437,6 +1438,22 @@ def parse_iw_scan(output):
             m = re.search(r'Wi-Fi Protected Setup State: (\d+)', text)
             if m:
                 net['wps_state'] = int(m.group(1))
+            # Extract device identification from WPS
+            m = re.search(r'Manufacturer:\s*(.+)', text)
+            if m:
+                net['wps_manufacturer'] = m.group(1).strip()
+            m = re.search(r'Model Name:\s*(.+)', text)
+            if m:
+                net['wps_model_name'] = m.group(1).strip()
+            m = re.search(r'Model Number:\s*(.+)', text)
+            if m:
+                net['wps_model_number'] = m.group(1).strip()
+            m = re.search(r'Device name:\s*(.+)', text)
+            if m:
+                net['wps_device_name'] = m.group(1).strip()
+            m = re.search(r'Serial Number:\s*(.+)', text)
+            if m:
+                net['wps_serial'] = m.group(1).strip()
 
         # RSN block: find all lines between "RSN:" and the next top-level section
         rsn_match = re.search(r'^\tRSN:', text, re.MULTILINE)
@@ -1784,6 +1801,23 @@ def parse_iw_scan(output):
                     })
                     break
 
+        # Vendor-specific vulnerability checks
+        ap_vendor_vulns = check_ap_vulnerabilities(
+            vendor=net['vendor'],
+            model_name=net.get('wps_model_name', ''),
+            model_number=net.get('wps_model_number', ''),
+            device_name=net.get('wps_device_name', ''),
+            manufacturer=net.get('wps_manufacturer', ''),
+        )
+        for av in ap_vendor_vulns:
+            vulnerabilities.append({
+                'severity': av['severity'],
+                'id': f'VENDOR_{av.get("cve", "VULN")}',
+                'title': av['title'],
+                'description': av['description'] + (f' Affected: {av["affected_versions"]}' if av.get('affected_versions') else ''),
+                'recommendation': av['recommendation'],
+            })
+
         # Count by severity
         sev_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0, 'info': 0}
         for v in vulnerabilities:
@@ -1803,6 +1837,10 @@ def parse_iw_scan(output):
             'vendor': net['vendor'],
             'pmf': 'Required' if net['pmf_required'] else ('Capable' if net['pmf_capable'] else 'No'),
             'wps': net['wps'],
+            'wps_manufacturer': net.get('wps_manufacturer', ''),
+            'wps_model_name': net.get('wps_model_name', ''),
+            'wps_model_number': net.get('wps_model_number', ''),
+            'wps_device_name': net.get('wps_device_name', ''),
             'vulnerabilities': vulnerabilities,
             'vuln_counts': sev_counts,
         })

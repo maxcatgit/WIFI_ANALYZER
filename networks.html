@@ -326,7 +326,9 @@
             const sorted = [...vulns].sort((a, b) => sevOrder.indexOf(a.severity) - sevOrder.indexOf(b.severity));
 
             let html = '<div class="vuln-detail">';
+            const deviceInfo = [net.wps_manufacturer, net.wps_model_name, net.wps_model_number].filter(Boolean).join(' ');
             html += `<h4>Vulnerabilities for ${escHtml(net.ssid)} (${escHtml(net.bssid)})</h4>`;
+            if (deviceInfo) html += `<div style="font-size:0.82rem;color:#555;margin-bottom:0.5rem;">Device: <strong>${escHtml(deviceInfo)}</strong></div>`;
             sorted.forEach(v => {
                 html += `<div class="vuln-item sev-${v.severity}">
                     <div class="vuln-item-header">
@@ -396,7 +398,7 @@
                 html += `<tr class="${rowClass}${selClass}" id="${rowId}" onclick="selectNetwork('${net.bssid}', ${idx}, event)" style="cursor:pointer;">
                     <td>${renderVulnBadges(net)}</td>
                     <td${ssidClass}>${escHtml(net.ssid)}</td>
-                    <td>${escHtml(net.bssid)}<span class="bssid-vendor${vendorCls}">${escHtml(net.vendor)}</span></td>
+                    <td>${escHtml(net.bssid)}<span class="bssid-vendor${vendorCls}">${escHtml(net.vendor)}${net.wps_model_name ? ' — ' + escHtml(net.wps_model_name) : ''}${net.wps_device_name && net.wps_device_name !== net.wps_model_name ? ' (' + escHtml(net.wps_device_name) + ')' : ''}</span></td>
                     <td>${escHtml(net.channel)}</td>
                     <td>${escHtml(net.band)}</td>
                     <td><span class="signal-bar ${sigClass}" style="width:${sigWidth}"></span><br><span style="font-size:0.8rem;">${net.signal} dBm</span></td>
